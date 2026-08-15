@@ -1760,6 +1760,10 @@ void setup() {
   // --------------------------------------------------------
 
   WiFi.mode(WIFI_STA);
+  // Keep 10 Hz live transport latency predictable. Default station power
+  // save produced long enough stalls during hardware validation to fill the
+  // live queue and threaten the ACK watchdog.
+  WiFi.setSleep(false);
   WiFi.setAutoReconnect(true);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 

@@ -12,9 +12,17 @@ export interface ObjectiveSession {
 export class UnknownObjectiveDeviceError extends Error {}
 export class ActiveObjectiveSessionConflictError extends Error {}
 
+const STOPPED_PACKET_GRACE_MS = 5_000;
+
+interface RecentlyStoppedSession {
+  sessionId: string;
+  stoppedAtMs: number;
+}
+
 export class ObjectiveSessionManager {
   private readonly sessions = new Map<string, ObjectiveSession>();
   private readonly activeSessionByDevice = new Map<string, string>();
+  private readonly recentlyStoppedSessionByDevice = new Map<string, RecentlyStoppedSession>();
 
   constructor(private readonly provisionedDeviceIds: ReadonlySet<string>) {}
 
@@ -52,6 +60,15 @@ export class ObjectiveSessionManager {
   getLiveSessionForDevice(deviceId: string): ObjectiveSession | undefined {
     const session = this.getActiveSessionForDevice(deviceId);
     return session?.status === "LIVE" ? session : undefined;
+  }
+
+  isRecentlyStoppedSessionPacket(deviceId: string, sessionId: string, receivedAtMs: number): boolean {
+    const stopped = this.recentlyStoppedSessionByDevice.get(deviceId);
+    return (
+      stopped?.sessionId === sessionId &&
+      receivedAtMs - stopped.stoppedAtMs >= 0 &&
+      receivedAtMs - stopped.stoppedAtMs <= STOPPED_PACKET_GRACE_MS
+    );
   }
 
   handleDeviceConnected(deviceId: string): ObjectiveSession | undefined {
@@ -96,6 +113,10 @@ export class ObjectiveSessionManager {
 
     session.status = "COMPLETED";
     this.activeSessionByDevice.delete(session.device_id);
+    this.recentlyStoppedSessionByDevice.set(session.device_id, {
+      sessionId: session.session_id,
+      stoppedAtMs: Date.now(),
+    });
     return { session: { ...session }, changed: true };
   }
 

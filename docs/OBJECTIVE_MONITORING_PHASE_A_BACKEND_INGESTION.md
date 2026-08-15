@@ -725,16 +725,22 @@ no unexpected gaps
 ESP32 acquisition health unchanged
 ```
 
-### B. Backend restart
+### B. Reconnect and backend restart
 
 ```text
-ESP32 remains running
-backend stops
-backend restarts
-ESP32 reconnects
-session/device association recovers
-stream resumes
+Device/WebSocket reconnect while backend remains running:
+same monitoring session survives
+device reauthenticates
+existing session resumes
+
+Full backend-process restart in Phase A:
+in-memory sessions are lost by design
+device reconnects and reauthenticates safely
+device remains idle
+a new monitoring session must be created
 ```
+
+Durable backend-session recovery belongs to the persistence phase.
 
 ### C. Duplicate/stale handling
 
@@ -801,7 +807,8 @@ This phase is complete when:
 ✅ boot epochs are distinguished
 ✅ time metadata is attached without altering raw timestamps
 ✅ ACK:<seq> behavior remains healthy
-✅ backend restart/reconnect works
+✅ device reconnect resumes the existing in-memory session
+✅ backend-process restart fails safely to authenticated idle
 ✅ ESP32 acquisition health remains unchanged
 ✅ accepted-packet boundary exists for next-phase live/storage consumers
 ```

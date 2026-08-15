@@ -269,11 +269,32 @@ export function attachObjectiveDeviceGateway(
 
       const activeSession = dependencies.sessionManager.getLiveSessionForDevice(identity.deviceId);
       if (activeSession === undefined) {
+        // STOP can cross a sensor frame already in the TCP/WebSocket path.
+        // Reject that known, just-completed session frame without ACKing or
+        // publishing it, while preserving the authenticated idle socket.
+        if (
+          dependencies.sessionManager.isRecentlyStoppedSessionPacket(
+            identity.deviceId,
+            result.packet.session_id,
+            receivedAtMs,
+          )
+        ) {
+          return;
+        }
         closeForProtocolFailure(POLICY_VIOLATION, "active session required");
         return;
       }
 
       if (result.packet.session_id !== activeSession.session_id) {
+        if (
+          dependencies.sessionManager.isRecentlyStoppedSessionPacket(
+            identity.deviceId,
+            result.packet.session_id,
+            receivedAtMs,
+          )
+        ) {
+          return;
+        }
         closeForProtocolFailure(POLICY_VIOLATION, "session mismatch");
         return;
       }

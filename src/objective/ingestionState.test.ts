@@ -25,6 +25,11 @@ test("preserves a monitoring session through disconnect and reconnect", () => {
   const stopped = sessions.stopSession(created.session_id);
   assert.equal(stopped?.changed, true);
   assert.equal(stopped?.session.status, "COMPLETED");
+  assert.equal(sessions.isRecentlyStoppedSessionPacket("device-a", created.session_id, Date.now()), true);
+  assert.equal(
+    sessions.isRecentlyStoppedSessionPacket("device-a", created.session_id, Date.now() + 5_001),
+    false,
+  );
   assert.equal(sessions.stopSession(created.session_id)?.changed, false);
   assert.notEqual(sessions.createSession("device-a", true).session_id, created.session_id);
   assert.throws(() => sessions.createSession("unknown", false), UnknownObjectiveDeviceError);
