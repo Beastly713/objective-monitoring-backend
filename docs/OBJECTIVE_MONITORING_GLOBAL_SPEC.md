@@ -347,13 +347,13 @@ one or more boot epochs
 
 For the prototype, use one normal backend application rather than unnecessary distributed infrastructure.
 
-Current implementation direction:
+Implemented Phase A boundary:
 
 ```text
 Node.js + TypeScript backend
 ```
 
-Responsibilities:
+Established responsibilities:
 
 ```text
 device connection/session association
@@ -361,6 +361,12 @@ packet validation
 sequence/gap handling
 time mapping
 application ACK
+accepted-packet handoff
+```
+
+Next-stage responsibilities attach downstream from the accepted-packet handoff:
+
+```text
 live fan-out
 asynchronous persistence handoff
 ```
@@ -515,10 +521,10 @@ The default approach is:
 
 ## 18. Trusted Current Baseline
 
-Known-good firmware baseline:
+Current physically validated firmware baseline:
 
 ```text
-esp32_v5_2_websocket.ino
+esp32_v5_3_backend_session.ino
 ```
 
 Validated behavior includes:
@@ -534,16 +540,26 @@ Validated behavior includes:
 - PPG timestamp-drift correction,
 - packet timestamp checks,
 - WebSocket streaming,
+- HELLO authentication and READY state,
+- backend-issued monitoring-session control,
+- connected idle operation with acquisition still draining,
+- session-safe START/STOP behavior,
 - application ACK watchdog,
-- automatic reconnect.
+- automatic reconnect and active-session resume across an ESP32 reboot.
 
-Known diagnostic receiver baseline:
+The previous firmware remains the known-good acquisition/transport reference:
+
+```text
+esp32_v5_2_websocket.ino
+```
+
+The historical diagnostic receiver remains available as a transport/debug reference:
 
 ```text
 objective_ws_receiver_v2.mjs
 ```
 
-It already demonstrates:
+It demonstrates:
 
 - WebSocket receive path,
 - packet parsing/validation,
@@ -551,15 +567,61 @@ It already demonstrates:
 - ACK behavior,
 - controlled reconnect testing.
 
-Do not regress these validated properties while replacing the diagnostic receiver with the real backend.
+The Node/TypeScript backend under `src/` is now the real application ingestion endpoint. The diagnostic receiver is not a second implementation of the session protocol.
 
 ---
 
-## 19. Short Completion Path
+## 19. Phase A Completion Status
+
+Phase A — backend ingestion — was completed and physically validated on 2026-08-16.
+
+Validated path:
+
+```text
+physical sensors
+    ↓
+ESP32 V5.3
+    ↓
+HELLO / READY
+    ↓
+backend-issued START
+    ↓
+Schema V1 validation
+    ↓
+session + sequence + boot-epoch handling
+    ↓
+accepted-packet boundary
+    ↓
+ACK:<seq>
+```
+
+The completed boundary includes:
+
+- provisioned device authentication and one active socket per device,
+- backend-owned in-memory monitoring sessions,
+- WAITING, LIVE, DISCONNECTED, and COMPLETED session states,
+- START/STOP control and safe connected-idle operation,
+- strict raw Schema V1 validation without sensor conversion,
+- per-session/per-boot sequence tracking and time metadata,
+- duplicate suppression and explicit forward-gap reporting,
+- session resume across device/WebSocket reconnects while the backend remains alive,
+- an accepted-packet handoff ready for live fan-out and persistence.
+
+The physical validation sustained approximately 10 packets/second with healthy acquisition and ACK behavior. Durable evidence is recorded in:
+
+```text
+OBJECTIVE_MONITORING_PHASE_A_VALIDATION.md
+```
+
+Phase A deliberately keeps sessions and packets in process memory. A full backend-process restart therefore loses the active session; the device reauthenticates safely and remains idle until a new session is created. Durable recovery belongs to the persistence milestone.
+
+---
+
+## 20. Short Completion Path
 
 The project should remain on a short path to a demonstrable end state.
 
-### Milestone A — Real ingestion boundary
+### Milestone A — Real ingestion boundary — complete
 
 ```text
 session-aware backend
@@ -569,7 +631,7 @@ sequence/time handling
 ACK
 ```
 
-### Milestone B — Live + persistence
+### Milestone B — Live + persistence — next
 
 ```text
 backend fan-out
@@ -590,7 +652,7 @@ Do not create many artificial phases inside these milestones.
 
 ---
 
-## 20. Change Policy
+## 21. Change Policy
 
 This file is intentionally conservative.
 
