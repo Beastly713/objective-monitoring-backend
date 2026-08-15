@@ -5,6 +5,8 @@ import { handleObjectiveDashboardRequest } from "./objective/dashboard/dashboard
 import { createObjectiveDeviceGateway, OBJECTIVE_DEVICE_PATH } from "./objective/deviceGateway.js";
 import { ObjectiveDeviceRegistry } from "./objective/deviceRegistry.js";
 import { createObjectiveLiveGateway } from "./objective/live/liveGateway.js";
+import { ObjectiveHistoryRepository } from "./objective/history/historyRepository.js";
+import { handleObjectiveHistoryRequest } from "./objective/history/historyRoutes.js";
 import { attachObjectiveWebSocketRouter } from "./objective/objectiveWebSocketRouter.js";
 import {
   createDatabasePool,
@@ -52,6 +54,7 @@ async function startBackend(): Promise<void> {
   try {
     await verifyObjectivePersistenceSchema(pool);
     const sessionRepository = new ObjectiveSessionRepository(pool);
+    const historyRepository = new ObjectiveHistoryRepository(pool);
     const recoveredSessions = await sessionRepository.recoverNonCompletedSessions();
     const sessionManager = new ObjectiveSessionManager(
       new Set([deviceId]),
@@ -92,6 +95,15 @@ async function startBackend(): Promise<void> {
       }
 
       void handleObjectiveDashboardRequest(request, response)
+        .then((handled) => {
+          if (handled) {
+            return true;
+          }
+          return handleObjectiveHistoryRequest(request, response, {
+            sessionRepository,
+            historyRepository,
+          });
+        })
         .then((handled) => {
           if (handled) {
             return true;
