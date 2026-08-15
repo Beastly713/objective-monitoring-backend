@@ -1,8 +1,10 @@
 import { createServer } from "node:http";
 
 import { AcceptedPacketBus } from "./objective/acceptedPacketBus.js";
-import { attachObjectiveDeviceGateway, OBJECTIVE_DEVICE_PATH } from "./objective/deviceGateway.js";
+import { createObjectiveDeviceGateway, OBJECTIVE_DEVICE_PATH } from "./objective/deviceGateway.js";
 import { ObjectiveDeviceRegistry } from "./objective/deviceRegistry.js";
+import { createObjectiveLiveGateway } from "./objective/live/liveGateway.js";
+import { attachObjectiveWebSocketRouter } from "./objective/objectiveWebSocketRouter.js";
 import {
   createDatabasePool,
   readDatabaseUrl,
@@ -13,6 +15,7 @@ import { ObjectiveSessionRepository } from "./objective/persistence/sessionRepos
 import { SequenceTracker } from "./objective/sequenceTracker.js";
 import { ObjectiveSessionManager } from "./objective/sessionManager.js";
 import { handleObjectiveSessionRequest } from "./objective/sessionRoutes.js";
+import { handleObjectiveStatusRequest } from "./objective/statusRoutes.js";
 import { ObjectiveTimeMapper } from "./objective/timeMapper.js";
 
 const DEFAULT_HOST = "0.0.0.0";
@@ -62,9 +65,31 @@ async function startBackend(): Promise<void> {
 
     const deviceRegistry = new ObjectiveDeviceRegistry();
     const acceptedPacketBus = new AcceptedPacketBus();
-    new ObjectivePacketStore(acceptedPacketBus, pool);
+    const packetStore = new ObjectivePacketStore(acceptedPacketBus, pool);
+    const liveGateway = createObjectiveLiveGateway(acceptedPacketBus);
+    const deviceGateway = createObjectiveDeviceGateway({
+      credential: { deviceId, token: deviceToken },
+      deviceRegistry,
+      sessionManager,
+      sequenceTracker: new SequenceTracker(),
+      timeMapper: new ObjectiveTimeMapper(),
+      acceptedPacketBus,
+    });
 
     const server = createServer((request, response) => {
+      if (
+        handleObjectiveStatusRequest(request, response, {
+          configuredDeviceId: deviceId,
+          deviceRegistry,
+          deviceGateway,
+          sessionManager,
+          liveGateway,
+          packetStore,
+        })
+      ) {
+        return;
+      }
+
       void handleObjectiveSessionRequest(request, response, {
         sessionManager,
         sessionRepository,
@@ -86,13 +111,9 @@ async function startBackend(): Promise<void> {
         });
     });
 
-    attachObjectiveDeviceGateway(server, {
-      credential: { deviceId, token: deviceToken },
-      deviceRegistry,
-      sessionManager,
-      sequenceTracker: new SequenceTracker(),
-      timeMapper: new ObjectiveTimeMapper(),
-      acceptedPacketBus,
+    attachObjectiveWebSocketRouter(server, {
+      deviceGateway,
+      liveGateway,
     });
 
     server.on("error", (error) => {

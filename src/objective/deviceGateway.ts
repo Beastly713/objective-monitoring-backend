@@ -1,5 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
-import type { IncomingMessage, Server } from "node:http";
+import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import WebSocket, { WebSocketServer, type RawData } from "ws";
 
@@ -59,6 +59,7 @@ export interface DeviceGatewaySnapshot {
 }
 
 export interface DeviceGateway {
+  handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void;
   getSnapshot(): DeviceGatewaySnapshot;
   close(): void;
 }
@@ -73,10 +74,6 @@ function rawDataToBuffer(data: RawData): Buffer {
   }
 
   return Buffer.from(data);
-}
-
-function rejectUpgrade(socket: Duplex): void {
-  socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -109,10 +106,7 @@ function secretsEqual(actual: string, expected: string): boolean {
   return actualBytes.length === expectedBytes.length && timingSafeEqual(actualBytes, expectedBytes);
 }
 
-export function attachObjectiveDeviceGateway(
-  server: Server,
-  dependencies: DeviceGatewayDependencies,
-): DeviceGateway {
+export function createObjectiveDeviceGateway(dependencies: DeviceGatewayDependencies): DeviceGateway {
   const webSocketServer = new WebSocketServer({ noServer: true });
   const authenticatedDeviceIds = new Set<string>();
   let acceptedPackets = 0;
@@ -126,28 +120,6 @@ export function attachObjectiveDeviceGateway(
   let intervalAcceptedPackets = 0;
   let intervalReceivedBytes = 0;
   let intervalAcknowledgements = 0;
-
-  const handleUpgrade = (request: IncomingMessage, socket: Duplex, head: Buffer): void => {
-    let pathname: string;
-
-    try {
-      pathname = new URL(request.url ?? "", "http://localhost").pathname;
-    } catch {
-      rejectUpgrade(socket);
-      return;
-    }
-
-    if (pathname !== OBJECTIVE_DEVICE_PATH) {
-      rejectUpgrade(socket);
-      return;
-    }
-
-    webSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
-      webSocketServer.emit("connection", webSocket, request);
-    });
-  };
-
-  server.on("upgrade", handleUpgrade);
 
   webSocketServer.on("connection", (webSocket, request) => {
     const remoteAddress = request.socket.remoteAddress ?? "unknown";
@@ -368,6 +340,11 @@ export function attachObjectiveDeviceGateway(
   diagnosticsInterval.unref();
 
   return {
+    handleUpgrade: (request, socket, head) => {
+      webSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
+        webSocketServer.emit("connection", webSocket, request);
+      });
+    },
     getSnapshot: () => ({
       connectedClients: webSocketServer.clients.size,
       authenticatedDevices: dependencies.deviceRegistry.size,
@@ -382,7 +359,6 @@ export function attachObjectiveDeviceGateway(
     }),
     close: () => {
       clearInterval(diagnosticsInterval);
-      server.off("upgrade", handleUpgrade);
       webSocketServer.close();
     },
   };
