@@ -115,7 +115,7 @@ WITH session_packets AS (
     ((raw_packet->>'t1_us')::double precision - (raw_packet->>'t0_us')::double precision) / 1000
       AS packet_span_ms,
     lag(seq) OVER (
-      PARTITION BY session_id, boot_id
+      PARTITION BY session_id, boot_id, epoch_id
       ORDER BY seq
     ) AS previous_persisted_seq
   FROM objective_packets

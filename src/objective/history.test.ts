@@ -210,7 +210,42 @@ test("known session with no packets has a valid empty manifest", async () => {
   assert.deepEqual(await repositoryWithRows([]).getManifest(SESSION_ID), emptyTimeline());
 });
 
-test("packet query annotates full history before overlap filtering and preserves raw packet", async () => {
+test("same-boot epoch transition resets history-gap inference but remains a time boundary", async () => {
+  const sqlCalls: string[] = [];
+  const repository = repositoryWithRows([
+    annotatedRow({
+      seq: 100,
+      sequence_status: "normal",
+      raw_packet: rawPacket(100),
+    }),
+    annotatedRow({
+      seq: 105,
+      sequence_status: "first",
+      epoch_id: EPOCH_B,
+      history_gap_before: 0,
+      plot_t0_ms: 200,
+      packet_effective_wall_ms: 10_200,
+      replay_t0_ms: 200,
+      packet_end_replay_ms: 300,
+      raw_packet: rawPacket(105),
+    }),
+  ], sqlCalls);
+
+  const manifest = await repository.getManifest(SESSION_ID);
+  assert.equal(manifest.history_gap_events, 0);
+  assert.equal(manifest.history_missing_packets, 0);
+  assert.deepEqual(manifest.gaps.filter((gap) => gap.type === "history"), []);
+  assert.deepEqual(manifest.segments.map((segment) => segment.boundary_type), [
+    "session_start",
+    "time_epoch",
+  ]);
+  assert.match(
+    sqlCalls[0],
+    /lag\(seq\)[\s\S]*PARTITION BY session_id, boot_id, epoch_id[\s\S]*ORDER BY seq/i,
+  );
+});
+
+test("same-boot same-epoch packet query retains history gaps before window filtering", async () => {
   const sourcePacket = rawPacket(8, { ecg: [[25_000, 456, 1, 0]] });
   const sqlCalls: string[] = [];
   const repository = repositoryWithRows([
@@ -226,7 +261,10 @@ test("packet query annotates full history before overlap filtering and preserves
   const result = await repository.getPacketWindow(SESSION_ID, 10_000.5, 2_000);
   assert.equal(result.packets[0].history_gap_before, 2);
   assert.strictEqual(result.packets[0].raw_packet, sourcePacket);
-  assert.match(sqlCalls[0], /lag\(seq\)[\s\S]*PARTITION BY session_id, boot_id[\s\S]*ORDER BY seq/i);
+  assert.match(
+    sqlCalls[0],
+    /lag\(seq\)[\s\S]*PARTITION BY session_id, boot_id, epoch_id[\s\S]*ORDER BY seq/i,
+  );
   assert.match(
     sqlCalls[0],
     /greatest\(0, seq - previous_persisted_seq - 1 - gap_before\)/,
