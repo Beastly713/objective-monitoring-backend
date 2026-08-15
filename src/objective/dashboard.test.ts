@@ -42,6 +42,8 @@ test("dashboard routes serve only the fixed local clinician assets", async () =>
     assert.match(source, /sample\[1\] \* 0\.0078125/);
     assert.match(source, /buffer\.data\[column\]\.push\(null\)/);
     assert.match(source, /packet\.epoch_id !== state\.currentEpochId/);
+    assert.match(source, /currentSequence > state\.lastLiveSequence \+ 1/);
+    assert.match(source, /Live delivery gap before seq/);
 
     const uplot = await fetch(`${origin}/objective-assets/uPlot.iife.min.js`);
     assert.equal(uplot.status, 200);

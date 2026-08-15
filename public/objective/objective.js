@@ -16,6 +16,8 @@
     statusRefreshing: false,
     historyRefreshing: false,
     currentEpochId: null,
+    lastLiveBootId: null,
+    lastLiveSequence: null,
     previousRateSample: null,
     errorSource: null,
   };
@@ -143,6 +145,8 @@
   function clearSignalState() {
     Object.values(charts).forEach(clearChart);
     state.currentEpochId = null;
+    state.lastLiveBootId = null;
+    state.lastLiveSequence = null;
     setText("epoch-state", "Waiting for data");
     setText("ecg-lead-state", "Lead state —");
     setText("ppg-reading", "RED — · IR —");
@@ -212,13 +216,25 @@
       const previousEpoch = state.currentEpochId;
       Object.values(charts).forEach(clearChart);
       state.currentEpochId = packet.epoch_id;
+      state.lastLiveBootId = null;
+      state.lastLiveSequence = null;
       setText(
         "epoch-state",
         `Epoch/device reboot changed · ${shortId(previousEpoch)} → ${shortId(packet.epoch_id)}`,
       );
     }
 
-    if (packet.gap_before > 0 || packet.sequence_status === "gap") {
+    const backendGap = packet.gap_before > 0 || packet.sequence_status === "gap";
+    const currentSequence = packet.raw_packet.seq;
+    const liveDeliveryGap =
+      !backendGap &&
+      !epochChanged &&
+      state.lastLiveBootId === packet.boot_id &&
+      Number.isInteger(state.lastLiveSequence) &&
+      Number.isInteger(currentSequence) &&
+      currentSequence > state.lastLiveSequence + 1;
+
+    if (backendGap) {
       markDiscontinuity();
       setText(
         "epoch-state",
@@ -226,7 +242,13 @@
           ? `Epoch/device reboot changed · gap before seq ${packet.raw_packet.seq}`
           : `Gap before seq ${packet.raw_packet.seq} · epoch ${shortId(packet.epoch_id)}`,
       );
+    } else if (liveDeliveryGap) {
+      markDiscontinuity();
+      setText("epoch-state", `Live delivery gap before seq ${currentSequence}`);
     }
+
+    state.lastLiveBootId = packet.boot_id;
+    state.lastLiveSequence = currentSequence;
 
     const raw = packet.raw_packet;
     const base = packet.plot_t0_ms;

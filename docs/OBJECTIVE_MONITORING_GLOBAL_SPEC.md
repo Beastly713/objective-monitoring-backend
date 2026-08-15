@@ -631,7 +631,7 @@ sequence/time handling
 ACK
 ```
 
-### Milestone B — Live + persistence — next
+### Milestone B — Live + persistence — complete
 
 ```text
 backend fan-out
@@ -640,7 +640,9 @@ packet persistence
 session history
 ```
 
-### Milestone C — Replay + minimal processing/presentation
+Phase B was physically validated with the real five-sensor ESP32, PostgreSQL, and clinician browser path. See [OBJECTIVE_MONITORING_PHASE_B_VALIDATION.md](OBJECTIVE_MONITORING_PHASE_B_VALIDATION.md).
+
+### Milestone C — Replay + minimal processing/presentation — next
 
 ```text
 historical replay
