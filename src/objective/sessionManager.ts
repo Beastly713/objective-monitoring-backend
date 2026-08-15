@@ -1,5 +1,3 @@
-import { randomUUID } from "node:crypto";
-
 export type ObjectiveSessionStatus = "WAITING" | "LIVE" | "DISCONNECTED" | "COMPLETED";
 
 export interface ObjectiveSession {
@@ -7,6 +5,8 @@ export interface ObjectiveSession {
   device_id: string;
   status: ObjectiveSessionStatus;
   created_at_ms: number;
+  updated_at_ms: number;
+  completed_at_ms: number | null;
 }
 
 export class UnknownObjectiveDeviceError extends Error {}
@@ -19,32 +19,48 @@ interface RecentlyStoppedSession {
   stoppedAtMs: number;
 }
 
+export type RuntimeStatusChangeHandler = (session: ObjectiveSession) => void | Promise<void>;
+
 export class ObjectiveSessionManager {
   private readonly sessions = new Map<string, ObjectiveSession>();
   private readonly activeSessionByDevice = new Map<string, string>();
   private readonly recentlyStoppedSessionByDevice = new Map<string, RecentlyStoppedSession>();
 
-  constructor(private readonly provisionedDeviceIds: ReadonlySet<string>) {}
+  constructor(
+    private readonly provisionedDeviceIds: ReadonlySet<string>,
+    private readonly onRuntimeStatusChange?: RuntimeStatusChangeHandler,
+  ) {}
 
-  createSession(deviceId: string, deviceConnected: boolean): ObjectiveSession {
+  assertCanRegisterSession(deviceId: string): void {
     if (!this.provisionedDeviceIds.has(deviceId)) {
       throw new UnknownObjectiveDeviceError(`unknown objective device ${deviceId}`);
     }
-
     if (this.activeSessionByDevice.has(deviceId)) {
-      throw new ActiveObjectiveSessionConflictError(`device ${deviceId} already has an active session`);
+      throw new ActiveObjectiveSessionConflictError(
+        `device ${deviceId} already has a non-completed session`,
+      );
+    }
+  }
+
+  registerSession(session: ObjectiveSession): ObjectiveSession {
+    this.assertCanRegisterSession(session.device_id);
+    if (session.status === "COMPLETED") {
+      throw new Error(`cannot register completed objective session ${session.session_id}`);
+    }
+    if (this.sessions.has(session.session_id)) {
+      throw new Error(`objective session ${session.session_id} is already registered`);
     }
 
-    const session: ObjectiveSession = {
-      session_id: randomUUID(),
-      device_id: deviceId,
-      status: deviceConnected ? "LIVE" : "WAITING",
-      created_at_ms: Date.now(),
-    };
+    const runtimeSession = { ...session };
+    this.sessions.set(runtimeSession.session_id, runtimeSession);
+    this.activeSessionByDevice.set(runtimeSession.device_id, runtimeSession.session_id);
+    return { ...runtimeSession };
+  }
 
-    this.sessions.set(session.session_id, session);
-    this.activeSessionByDevice.set(deviceId, session.session_id);
-    return { ...session };
+  hydrateSessions(sessions: readonly ObjectiveSession[]): void {
+    for (const session of sessions) {
+      this.registerSession(session);
+    }
   }
 
   getSession(sessionId: string): ObjectiveSession | undefined {
@@ -82,7 +98,9 @@ export class ObjectiveSessionManager {
       return undefined;
     }
 
-    session.status = "LIVE";
+    if (session.status !== "LIVE") {
+      this.transitionRuntimeStatus(session, "LIVE");
+    }
     return { ...session };
   }
 
@@ -97,7 +115,7 @@ export class ObjectiveSessionManager {
       return session === undefined ? undefined : { ...session };
     }
 
-    session.status = "DISCONNECTED";
+    this.transitionRuntimeStatus(session, "DISCONNECTED");
     return { ...session };
   }
 
@@ -111,7 +129,10 @@ export class ObjectiveSessionManager {
       return { session: { ...session }, changed: false };
     }
 
+    const stoppedAtMs = this.nextUpdatedAt(session);
     session.status = "COMPLETED";
+    session.updated_at_ms = stoppedAtMs;
+    session.completed_at_ms = stoppedAtMs;
     this.activeSessionByDevice.delete(session.device_id);
     this.recentlyStoppedSessionByDevice.set(session.device_id, {
       sessionId: session.session_id,
@@ -126,5 +147,26 @@ export class ObjectiveSessionManager {
       return `${deviceId}:${session?.status ?? "unknown"}`;
     });
     return states.length === 0 ? "none" : states.join(",");
+  }
+
+  private transitionRuntimeStatus(session: ObjectiveSession, status: ObjectiveSessionStatus): void {
+    session.status = status;
+    session.updated_at_ms = this.nextUpdatedAt(session);
+    const snapshot = { ...session };
+
+    if (this.onRuntimeStatusChange !== undefined) {
+      queueMicrotask(() => {
+        Promise.resolve(this.onRuntimeStatusChange?.(snapshot)).catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : "unknown persistence error";
+          console.warn(
+            `[objective-storage] session status update failed session_id=${snapshot.session_id} status=${snapshot.status} message=${message}`,
+          );
+        });
+      });
+    }
+  }
+
+  private nextUpdatedAt(session: ObjectiveSession): number {
+    return Math.max(Date.now(), session.updated_at_ms + 1);
   }
 }

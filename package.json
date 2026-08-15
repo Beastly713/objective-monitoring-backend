@@ -9,14 +9,17 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
+    "db:migrate": "node --import tsx src/objective/persistence/migrate.ts",
     "start": "node dist/index.js",
     "test": "node --import tsx --test src/objective/*.test.ts"
   },
   "dependencies": {
+    "pg": "^8.23.0",
     "ws": "^8.21.3"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
+    "@types/pg": "^8.21.0",
     "@types/ws": "^8.18.1",
     "tsx": "^4.23.12",
     "typescript": "^7.0.2"

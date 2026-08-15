@@ -11,16 +11,34 @@ import {
 } from "./sessionManager.js";
 import { ObjectiveTimeMapper } from "./timeMapper.js";
 
-test("preserves a monitoring session through disconnect and reconnect", () => {
-  const sessions = new ObjectiveSessionManager(new Set(["device-a"]));
-  const created = sessions.createSession("device-a", false);
+test("preserves a monitoring session through disconnect and reconnect", async () => {
+  const persistedStatuses: string[] = [];
+  const sessions = new ObjectiveSessionManager(new Set(["device-a"]), (session) => {
+    persistedStatuses.push(session.status);
+  });
+  const created = sessions.registerSession({
+    session_id: "00000000-0000-4000-8000-000000000001",
+    device_id: "device-a",
+    status: "WAITING",
+    created_at_ms: Date.now(),
+    updated_at_ms: Date.now(),
+    completed_at_ms: null,
+  });
 
   assert.equal(created.status, "WAITING");
   assert.equal(sessions.handleDeviceConnected("device-a")?.status, "LIVE");
+  assert.deepEqual(persistedStatuses, []);
   assert.equal(sessions.handleDeviceDisconnected("device-a")?.status, "DISCONNECTED");
   assert.equal(sessions.handleDeviceConnected("device-a")?.session_id, created.session_id);
   assert.equal(sessions.getSession(created.session_id)?.status, "LIVE");
-  assert.throws(() => sessions.createSession("device-a", true), ActiveObjectiveSessionConflictError);
+  assert.throws(
+    () =>
+      sessions.registerSession({
+        ...created,
+        session_id: "00000000-0000-4000-8000-000000000002",
+      }),
+    ActiveObjectiveSessionConflictError,
+  );
 
   const stopped = sessions.stopSession(created.session_id);
   assert.equal(stopped?.changed, true);
@@ -31,8 +49,21 @@ test("preserves a monitoring session through disconnect and reconnect", () => {
     false,
   );
   assert.equal(sessions.stopSession(created.session_id)?.changed, false);
-  assert.notEqual(sessions.createSession("device-a", true).session_id, created.session_id);
-  assert.throws(() => sessions.createSession("unknown", false), UnknownObjectiveDeviceError);
+  const replacement = sessions.registerSession({
+    session_id: "00000000-0000-4000-8000-000000000002",
+    device_id: "device-a",
+    status: "WAITING",
+    created_at_ms: Date.now(),
+    updated_at_ms: Date.now(),
+    completed_at_ms: null,
+  });
+  assert.notEqual(replacement.session_id, created.session_id);
+  assert.throws(
+    () => sessions.assertCanRegisterSession("unknown"),
+    UnknownObjectiveDeviceError,
+  );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(persistedStatuses, ["LIVE", "DISCONNECTED", "LIVE"]);
 });
 
 test("classifies forward progress per session and boot without advancing on duplicates", () => {
