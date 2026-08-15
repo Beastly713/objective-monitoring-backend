@@ -34,29 +34,63 @@
         </div>
 
         <div id="review-controls" class="review-controls" hidden>
-          <label class="review-session-field">
-            <span>Review session</span>
-            <select id="review-session-select" disabled>
-              <option value="">No persisted sessions</option>
-            </select>
-          </label>
-          <div class="replay-actions">
-            <button id="replay-play-button" class="button primary" type="button" disabled>Play</button>
-            <button id="replay-restart-button" class="button secondary" type="button" disabled>Restart</button>
-            <label class="speed-field">
-              <span>Speed</span>
-              <select id="replay-speed" disabled>
-                <option value="0.5">0.5×</option>
-                <option value="1" selected>1×</option>
-                <option value="2">2×</option>
-                <option value="4">4×</option>
+          <div class="review-session-browser">
+            <label class="review-session-field">
+              <span>Historical session</span>
+              <select id="review-session-select" disabled>
+                <option value="">No persisted sessions</option>
               </select>
             </label>
+            <p id="review-session-detail" class="session-identity mono" title="">No session selected</p>
           </div>
-          <div class="replay-timeline">
-            <input id="replay-seek" type="range" min="0" max="0" value="0" step="0.001" disabled aria-label="Replay position">
-            <output id="replay-time" for="replay-seek" class="mono">T+00:00.000 / 00:00.000</output>
+
+          <dl id="review-summary" class="review-summary" aria-label="Selected historical session summary">
+            <div><dt>Status</dt><dd id="summary-status">—</dd></div>
+            <div><dt>Device</dt><dd id="summary-device">—</dd></div>
+            <div><dt>Started</dt><dd id="summary-started">—</dd></div>
+            <div><dt>Completed</dt><dd id="summary-completed">—</dd></div>
+            <div><dt>Recorded duration</dt><dd id="summary-duration">—</dd></div>
+            <div><dt>Persisted packets</dt><dd id="summary-packets">—</dd></div>
+            <div><dt>Ingestion gaps</dt><dd id="summary-ingestion-gaps">—</dd></div>
+            <div><dt>Stored-history gaps</dt><dd id="summary-history-gaps">—</dd></div>
+            <div><dt>Truncated packets</dt><dd id="summary-truncated">—</dd></div>
+            <div><dt>Boots / epochs</dt><dd id="summary-boundaries">—</dd></div>
+          </dl>
+
+          <div class="replay-workbench">
+            <div class="replay-toolbar">
+              <div class="replay-actions">
+                <button id="replay-play-button" class="button primary" type="button" disabled>Play</button>
+                <button id="replay-restart-button" class="button secondary" type="button" disabled>Restart</button>
+                <label class="speed-field">
+                  <span>Speed</span>
+                  <select id="replay-speed" disabled>
+                    <option value="0.5">0.5×</option>
+                    <option value="1" selected>1×</option>
+                    <option value="2">2×</option>
+                    <option value="4">4×</option>
+                  </select>
+                </label>
+              </div>
+              <output id="replay-time" for="replay-seek" class="replay-time mono">T+00:00.000 / 00:00.000</output>
+            </div>
+
+            <div class="continuity-timeline" aria-label="Full-session replay timeline">
+              <div id="timeline-marker-rail" class="timeline-marker-rail" aria-label="Historical continuity markers">
+                <div id="timeline-progress" class="timeline-progress"></div>
+                <div id="timeline-inspection" class="timeline-inspection" hidden></div>
+              </div>
+              <input id="replay-seek" type="range" min="0" max="0" value="0" step="0.001" disabled aria-label="Seek through full historical session">
+            </div>
+
+            <div class="continuity-legend" aria-label="Continuity marker legend">
+              <span><b>I</b> Ingestion gap <em id="legend-ingestion-count">0</em></span>
+              <span><b>H</b> Stored-history gap <em id="legend-history-count">0</em></span>
+              <span><b>R</b> Device reboot <em id="legend-reboot-count">0</em></span>
+              <span><b>E</b> Time/backend epoch <em id="legend-epoch-count">0</em></span>
+            </div>
           </div>
+
           <div class="replay-feedback" aria-live="polite">
             <span id="replay-status">Select a persisted session to review.</span>
             <span id="replay-warning" class="replay-warning" hidden></span>
@@ -126,11 +160,36 @@
             <p id="signals-kicker" class="section-kicker">Live signals</p>
             <h2 id="signals-heading">Five-sensor stream</h2>
           </div>
-          <p id="signals-description">ESP-relative time · rolling windows · no filtering or interpretation</p>
+          <div class="signals-heading-tools">
+            <p id="signals-description">ESP-relative time · rolling windows · no filtering or interpretation</p>
+            <div id="review-focus-controls" class="focus-controls" role="group" aria-label="Focus historical signal" hidden>
+              <button type="button" class="active" data-focus="all" aria-pressed="true">All</button>
+              <button type="button" data-focus="ecg" aria-pressed="false">ECG</button>
+              <button type="button" data-focus="ppg" aria-pressed="false">PPG</button>
+              <button type="button" data-focus="gsr" aria-pressed="false">GSR</button>
+              <button type="button" data-focus="imu" aria-pressed="false">IMU</button>
+              <button type="button" data-focus="temperature" aria-pressed="false">Temperature</button>
+            </div>
+          </div>
         </div>
 
-        <div class="chart-grid">
-          <article class="panel chart-panel wide">
+        <div id="inspection-panel" class="inspection-panel" hidden aria-live="polite">
+          <div class="inspection-heading">
+            <span>Shared inspection</span>
+            <strong id="inspection-time" class="mono">Playback T+00:00.000</strong>
+            <small id="inspection-policy">Nearest sample at or before position · no interpolation</small>
+          </div>
+          <dl>
+            <div><dt>ECG</dt><dd id="inspection-ecg">—</dd></div>
+            <div><dt>PPG</dt><dd id="inspection-ppg">—</dd></div>
+            <div><dt>GSR</dt><dd id="inspection-gsr">—</dd></div>
+            <div><dt>IMU</dt><dd id="inspection-imu">—</dd></div>
+            <div><dt>Temperature</dt><dd id="inspection-temperature">—</dd></div>
+          </dl>
+        </div>
+
+        <div id="chart-grid" class="chart-grid" data-focus="all">
+          <article class="panel chart-panel wide" data-signal="ecg">
             <div class="chart-heading">
               <div><h3>ECG</h3><p id="ecg-context">Raw ADC · 10 second window</p></div>
               <span id="ecg-lead-state" class="sensor-reading">Lead state —</span>
@@ -138,7 +197,7 @@
             <div id="ecg-chart" class="chart" aria-label="Live raw ECG ADC chart"></div>
           </article>
 
-          <article class="panel chart-panel wide">
+          <article class="panel chart-panel wide" data-signal="ppg">
             <div class="chart-heading">
               <div><h3>PPG</h3><p id="ppg-context">Raw RED and IR · 10 second window</p></div>
               <span id="ppg-reading" class="sensor-reading">RED — · IR —</span>
@@ -146,7 +205,7 @@
             <div id="ppg-chart" class="chart" aria-label="Live raw PPG RED and IR chart"></div>
           </article>
 
-          <article class="panel chart-panel">
+          <article class="panel chart-panel" data-signal="gsr">
             <div class="chart-heading">
               <div><h3>GSR / EDA</h3><p id="gsr-context">Raw sensor trend · 30 second window</p></div>
               <span id="gsr-reading" class="sensor-reading">Raw —</span>
@@ -154,7 +213,7 @@
             <div id="gsr-chart" class="chart" aria-label="Live raw GSR sensor chart"></div>
           </article>
 
-          <article class="panel chart-panel">
+          <article class="panel chart-panel" data-signal="imu">
             <div class="chart-heading">
               <div><h3>IMU motion</h3><p id="imu-context">Acceleration magnitude · 10 second window</p></div>
               <span id="imu-magnitude" class="sensor-reading">Magnitude — g</span>
@@ -163,7 +222,7 @@
             <p id="imu-reading" class="detail-reading mono">Accel — · Gyro —</p>
           </article>
 
-          <article class="panel chart-panel">
+          <article class="panel chart-panel" data-signal="temperature">
             <div class="chart-heading">
               <div><h3>Temperature</h3><p id="temperature-context">Display conversion · 60 second window</p></div>
               <span id="temperature-reading" class="sensor-reading">— °C</span>

@@ -32,6 +32,8 @@
       replayPositionMs: 0,
       replaySpeed: 1,
       playing: false,
+      inspectionPositionMs: null,
+      focusSignal: "all",
       previousAnimationNow: null,
       animationFrame: null,
       cache: new Map(),
@@ -95,7 +97,21 @@
       width: Math.max(320, element.clientWidth),
       height: 220,
       padding: [10, 8, 0, 2],
-      cursor: { show: false },
+      cursor: {
+        show: true,
+        x: true,
+        y: false,
+        drag: { x: false, y: false },
+        sync: {
+          key: "objective-review-inspection",
+          scales: ["x", null],
+          filters: {
+            pub: () => state.mode === "review",
+            sub: () => state.mode === "review",
+          },
+        },
+      },
+      hooks: { setCursor: [handleReviewCursor] },
       legend: { show: series.length > 1 },
       scales: { x: { time: false } },
       axes: [
@@ -127,14 +143,16 @@
 
   function createRollingChart(elementId, windowMs, maxPoints, series) {
     const element = byId(elementId);
+    const signalName = elementId.replace("-chart", "");
     const data = Array.from({ length: series.length + 1 }, () => []);
     const plot = new uPlot(chartOptions(element, series), data, element);
-    const buffer = { data, plot, windowMs, maxPoints, breakPending: false };
+    const buffer = { data, plot, element, windowMs, maxPoints, breakPending: false };
 
     const observer = new ResizeObserver(() => {
       const width = Math.floor(element.clientWidth);
       if (width > 0 && width !== plot.width) {
-        plot.setSize({ width, height: 220 });
+        const focused = state.mode === "review" && state.review.focusSignal === signalName;
+        plot.setSize({ width, height: focused ? 340 : 220 });
       }
     });
     observer.observe(element);
@@ -236,7 +254,9 @@
   function processAcceptedPacket(packet) {
     if (!packet || packet.session_id !== state.activeSessionId || !packet.raw_packet) return;
 
+    const bootChanged = state.lastLiveBootId !== null && packet.boot_id !== state.lastLiveBootId;
     let epochChanged = false;
+    let boundaryLabel = null;
     if (state.currentEpochId === null) {
       state.currentEpochId = packet.epoch_id;
       setText("epoch-state", `Epoch ${shortId(packet.epoch_id)}`);
@@ -245,12 +265,14 @@
       const previousEpoch = state.currentEpochId;
       Object.values(charts).forEach(clearChart);
       state.currentEpochId = packet.epoch_id;
-      state.lastLiveBootId = null;
       state.lastLiveSequence = null;
-      setText(
-        "epoch-state",
-        `Epoch/device reboot changed · ${shortId(previousEpoch)} → ${shortId(packet.epoch_id)}`,
-      );
+      boundaryLabel = bootChanged ? "Device reboot" : "Time/backend epoch";
+      setText("epoch-state", `${boundaryLabel} · ${shortId(previousEpoch)} → ${shortId(packet.epoch_id)}`);
+    } else if (bootChanged) {
+      Object.values(charts).forEach(clearChart);
+      state.lastLiveSequence = null;
+      boundaryLabel = "Device reboot";
+      setText("epoch-state", `${boundaryLabel} · boot ${shortId(packet.boot_id)}`);
     }
 
     const backendGap = packet.gap_before > 0 || packet.sequence_status === "gap";
@@ -258,6 +280,7 @@
     const liveDeliveryGap =
       !backendGap &&
       !epochChanged &&
+      !bootChanged &&
       state.lastLiveBootId === packet.boot_id &&
       Number.isInteger(state.lastLiveSequence) &&
       Number.isInteger(currentSequence) &&
@@ -267,8 +290,8 @@
       markDiscontinuity();
       setText(
         "epoch-state",
-        epochChanged
-          ? `Epoch/device reboot changed · gap before seq ${packet.raw_packet.seq}`
+        boundaryLabel !== null
+          ? `${boundaryLabel} · ingestion gap before seq ${packet.raw_packet.seq}`
           : `Gap before seq ${packet.raw_packet.seq} · epoch ${shortId(packet.epoch_id)}`,
       );
     } else if (liveDeliveryGap) {
@@ -346,11 +369,105 @@
     warning.hidden = !message;
   }
 
+  function resetReviewSummary() {
+    for (const id of [
+      "summary-status",
+      "summary-device",
+      "summary-started",
+      "summary-completed",
+      "summary-duration",
+      "summary-packets",
+      "summary-ingestion-gaps",
+      "summary-history-gaps",
+      "summary-truncated",
+      "summary-boundaries",
+    ]) setText(id, "—");
+    for (const id of [
+      "legend-ingestion-count",
+      "legend-history-count",
+      "legend-reboot-count",
+      "legend-epoch-count",
+    ]) setText(id, "0");
+    byId("timeline-marker-rail").querySelectorAll(".timeline-marker").forEach((marker) => marker.remove());
+  }
+
+  function renderReviewSummary(manifest) {
+    const session = manifest.session;
+    const timeline = manifest.timeline;
+    setText("summary-status", session.status);
+    setText("summary-device", session.device_id);
+    setText("summary-started", formatTime(session.created_at_ms));
+    setText("summary-completed", formatTime(session.completed_at_ms));
+    setText("summary-duration", formatReplayTime(timeline.duration_ms));
+    setText("summary-packets", formatNumber(timeline.packet_count));
+    setText(
+      "summary-ingestion-gaps",
+      `${formatNumber(timeline.ingestion_gap_events)} events · ${formatNumber(timeline.ingestion_missing_packets)} missing`,
+    );
+    setText(
+      "summary-history-gaps",
+      `${formatNumber(timeline.history_gap_events)} events · ${formatNumber(timeline.history_missing_packets)} missing`,
+    );
+    setText("summary-truncated", formatNumber(timeline.truncated_packets));
+    setText("summary-boundaries", `${formatNumber(timeline.boot_count)} / ${formatNumber(timeline.epoch_count)}`);
+  }
+
+  function addTimelineMarker(type, glyph, replayMs, label, durationMs) {
+    const marker = document.createElement("span");
+    marker.className = `timeline-marker ${type}`;
+    marker.textContent = glyph;
+    marker.style.left = `${durationMs > 0 ? Math.max(0, Math.min(100, replayMs / durationMs * 100)) : 0}%`;
+    marker.title = `${label} at T+${formatReplayTime(replayMs)}`;
+    marker.setAttribute("role", "img");
+    marker.setAttribute("aria-label", marker.title);
+    marker.tabIndex = 0;
+    byId("timeline-marker-rail").appendChild(marker);
+  }
+
+  function renderContinuityTimeline(manifest) {
+    const timeline = manifest.timeline;
+    byId("timeline-marker-rail").querySelectorAll(".timeline-marker").forEach((marker) => marker.remove());
+    const duration = timeline.duration_ms;
+    for (const gap of Array.isArray(timeline.gaps) ? timeline.gaps : []) {
+      const ingestion = gap.type === "ingestion";
+      addTimelineMarker(
+        ingestion ? "ingestion" : "history",
+        ingestion ? "I" : "H",
+        gap.replay_ms,
+        `${ingestion ? "Ingestion gap" : "Stored-history gap"}: ${gap.missing_packets} missing packets before seq ${gap.seq}`,
+        duration,
+      );
+    }
+    let rebootCount = 0;
+    let epochBoundaryCount = 0;
+    for (const segment of Array.isArray(timeline.segments) ? timeline.segments : []) {
+      if (segment.boundary_type === "device_reboot") {
+        rebootCount += 1;
+        addTimelineMarker("reboot", "R", segment.start_replay_ms, `Device reboot · boot ${shortId(segment.boot_id)}`, duration);
+      } else if (segment.boundary_type === "time_epoch") {
+        epochBoundaryCount += 1;
+        addTimelineMarker("epoch", "E", segment.start_replay_ms, `Time/backend epoch · epoch ${shortId(segment.epoch_id)}`, duration);
+      }
+    }
+    setText("legend-ingestion-count", formatNumber(timeline.ingestion_gap_events));
+    setText("legend-history-count", formatNumber(timeline.history_gap_events));
+    setText("legend-reboot-count", formatNumber(rebootCount));
+    setText("legend-epoch-count", formatNumber(epochBoundaryCount));
+  }
+
   function updateReplayTime() {
     const duration = replayDuration();
     const position = Math.min(state.review.replayPositionMs, duration);
     byId("replay-seek").value = String(position);
     setText("replay-time", `T+${formatReplayTime(position)} / ${formatReplayTime(duration)}`);
+    byId("timeline-progress").style.width = `${duration > 0 ? position / duration * 100 : 0}%`;
+    const inspection = byId("timeline-inspection");
+    if (state.review.inspectionPositionMs === null || duration <= 0) {
+      inspection.hidden = true;
+    } else {
+      inspection.hidden = false;
+      inspection.style.left = `${Math.max(0, Math.min(100, state.review.inspectionPositionMs / duration * 100))}%`;
+    }
   }
 
   function setReplayControlsEnabled(enabled) {
@@ -500,6 +617,105 @@
       Math.abs(segment.start_replay_ms - packet.replay_t0_ms) < 0.001) ?? null;
   }
 
+  function sampleAtOrBefore(signal, position, viewport) {
+    let match = null;
+    for (const entry of state.review.cache.values()) {
+      if (entry.status !== "ready") continue;
+      for (const packet of entry.packets) {
+        const samples = packet.raw_packet?.[signal];
+        if (!Array.isArray(samples)) continue;
+        for (const sample of samples) {
+          const sampleReplayMs = packet.replay_t0_ms + sample[0] / 1_000;
+          if (
+            sampleReplayMs >= viewport.min &&
+            sampleReplayMs <= position &&
+            (match === null || sampleReplayMs > match.replayMs)
+          ) {
+            match = { sample, replayMs: sampleReplayMs };
+          }
+        }
+      }
+    }
+    return match;
+  }
+
+  function updateInspectionReadings() {
+    if (state.mode !== "review" || state.review.manifest === null) return;
+    const viewport = replayViewport(state.review.replayPositionMs);
+    const requestedPosition = state.review.inspectionPositionMs ?? state.review.replayPositionMs;
+    const position = Math.min(requestedPosition, state.review.replayPositionMs);
+    const prefix = state.review.inspectionPositionMs === null ? "Playback" : "Cursor";
+    setText("inspection-time", `${prefix} T+${formatReplayTime(requestedPosition)}`);
+    for (const id of [
+      "inspection-ecg",
+      "inspection-ppg",
+      "inspection-gsr",
+      "inspection-imu",
+      "inspection-temperature",
+    ]) setText(id, "—");
+    resetSignalReadings();
+
+    const ecg = sampleAtOrBefore("ecg", position, viewport)?.sample ?? null;
+    if (ecg !== null) {
+      const leads = [];
+      if (ecg[2] === 1) leads.push("LO+");
+      if (ecg[3] === 1) leads.push("LO−");
+      const leadState = leads.length === 0 ? "Leads connected" : `Lead off ${leads.join(" / ")}`;
+      setText("ecg-lead-state", leadState);
+      setTone(byId("ecg-lead-state"), leads.length === 0 ? "good" : "warn");
+      setText("inspection-ecg", `ADC ${formatNumber(ecg[1])} · ${leadState}`);
+    }
+
+    const ppg = sampleAtOrBefore("ppg", position, viewport)?.sample ?? null;
+    if (ppg !== null) {
+      const value = `RED ${formatNumber(ppg[1])} · IR ${formatNumber(ppg[2])}`;
+      setText("ppg-reading", value);
+      setText("inspection-ppg", value);
+    }
+
+    const gsr = sampleAtOrBefore("gsr", position, viewport)?.sample ?? null;
+    if (gsr !== null) {
+      const value = `Raw ${formatNumber(gsr[1])}`;
+      setText("gsr-reading", value);
+      setText("inspection-gsr", value);
+    }
+
+    const imu = sampleAtOrBefore("imu", position, viewport)?.sample ?? null;
+    if (imu !== null) {
+      const acceleration = imu.slice(1, 4).map((value) => value / 16_384);
+      const gyro = imu.slice(4, 7).map((value) => value / 131);
+      const magnitude = Math.sqrt(acceleration.reduce((sum, value) => sum + value * value, 0));
+      setText("imu-magnitude", `Magnitude ${magnitude.toFixed(3)} g`);
+      setText(
+        "imu-reading",
+        `Accel ${acceleration.map((value) => value.toFixed(2)).join(" / ")} g · Gyro ${gyro.map((value) => value.toFixed(1)).join(" / ")} °/s`,
+      );
+      setText("inspection-imu", `${magnitude.toFixed(3)} g`);
+    }
+
+    const temperature = sampleAtOrBefore("temp", position, viewport)?.sample ?? null;
+    if (temperature !== null) {
+      const value = `${(temperature[1] * 0.0078125).toFixed(2)} °C`;
+      setText("temperature-reading", value);
+      setText("inspection-temperature", value);
+    }
+    setText(
+      "inspection-policy",
+      [ecg, ppg, gsr, imu, temperature].some((sample) => sample !== null)
+        ? "Nearest sample at or before position · no interpolation"
+        : "No signal samples in the loaded historical view",
+    );
+  }
+
+  function handleReviewCursor(plot) {
+    if (state.mode !== "review" || state.review.manifest === null || plot.cursor.left < 0) return;
+    const position = plot.posToVal(plot.cursor.left, "x");
+    if (!Number.isFinite(position)) return;
+    state.review.inspectionPositionMs = Math.max(0, Math.min(replayDuration(), position));
+    updateReplayTime();
+    updateInspectionReadings();
+  }
+
   function renderHistoricalPackets(viewport) {
     const position = state.review.replayPositionMs;
     const limits = { min: viewport.min, max: Math.min(viewport.max, position) };
@@ -514,11 +730,6 @@
     const breakPending = { ecg: false, ppg: false, gsr: false, imu: false, temperature: false };
     let previousPacket = null;
     let latestBoundaryMessage = null;
-    let latestEcg = null;
-    let latestPpg = null;
-    let latestGsr = null;
-    let latestImu = null;
-    let latestTemperature = null;
 
     for (const packet of packets) {
       if (packet.replay_t0_ms > position || !packet.raw_packet) continue;
@@ -583,14 +794,6 @@
         limits,
       );
 
-      const eligible = (samples) => Array.isArray(samples)
-        ? samples.filter((sample) => base + sample[0] / 1_000 <= limits.max).at(-1) ?? null
-        : null;
-      latestEcg = eligible(raw.ecg) ?? latestEcg;
-      latestPpg = eligible(raw.ppg) ?? latestPpg;
-      latestGsr = eligible(raw.gsr) ?? latestGsr;
-      latestImu = eligible(raw.imu) ?? latestImu;
-      latestTemperature = eligible(raw.temp) ?? latestTemperature;
       previousPacket = packet;
     }
 
@@ -599,27 +802,7 @@
       buffer.plot.setScale("x", { min: viewport.min, max: viewport.max });
     }
 
-    resetSignalReadings();
-    if (latestEcg !== null) {
-      const leads = [];
-      if (latestEcg[2] === 1) leads.push("LO+");
-      if (latestEcg[3] === 1) leads.push("LO−");
-      setText("ecg-lead-state", leads.length === 0 ? "Leads connected" : `Lead off ${leads.join(" / ")}`);
-      setTone(byId("ecg-lead-state"), leads.length === 0 ? "good" : "warn");
-    }
-    if (latestPpg !== null) setText("ppg-reading", `RED ${formatNumber(latestPpg[1])} · IR ${formatNumber(latestPpg[2])}`);
-    if (latestGsr !== null) setText("gsr-reading", `Raw ${formatNumber(latestGsr[1])}`);
-    if (latestImu !== null) {
-      const acceleration = latestImu.slice(1, 4).map((value) => value / 16_384);
-      const gyro = latestImu.slice(4, 7).map((value) => value / 131);
-      const magnitude = Math.sqrt(acceleration.reduce((sum, value) => sum + value * value, 0));
-      setText("imu-magnitude", `Magnitude ${magnitude.toFixed(3)} g`);
-      setText(
-        "imu-reading",
-        `Accel ${acceleration.map((value) => value.toFixed(2)).join(" / ")} g · Gyro ${gyro.map((value) => value.toFixed(1)).join(" / ")} °/s`,
-      );
-    }
-    if (latestTemperature !== null) setText("temperature-reading", `${(latestTemperature[1] * 0.0078125).toFixed(2)} °C`);
+    updateInspectionReadings();
     setText(
       "epoch-state",
       latestBoundaryMessage ?? (previousPacket ? `Review epoch ${shortId(previousPacket.epoch_id)}` : "No replay samples in view"),
@@ -679,6 +862,7 @@
 
   function setReplayPosition(positionMs) {
     state.review.replayPositionMs = Math.max(0, Math.min(replayDuration(), positionMs));
+    state.review.inspectionPositionMs = null;
     state.review.previousAnimationNow = null;
     updateReplayPresentation();
   }
@@ -717,16 +901,30 @@
     state.review.selectionGeneration = generation;
     stopReplayAnimation();
     state.review.sessionId = sessionId || null;
+    updateReviewedSessionHighlight();
     state.review.manifest = null;
     state.review.replayPositionMs = 0;
     state.review.replaySpeed = 1;
+    state.review.inspectionPositionMs = null;
     state.review.cache.clear();
     byId("replay-speed").value = "1";
     byId("replay-seek").max = "0";
     setReplayControlsEnabled(false);
     setReplayWarning("");
+    resetReviewSummary();
     clearSignalState();
+    for (const id of [
+      "inspection-ecg",
+      "inspection-ppg",
+      "inspection-gsr",
+      "inspection-imu",
+      "inspection-temperature",
+    ]) setText(id, "—");
+    setText("inspection-time", "Playback T+00:00.000");
+    setText("inspection-policy", "Waiting for replay samples");
     updateReplayTime();
+    setText("review-session-detail", sessionId || "No session selected");
+    byId("review-session-detail").title = sessionId || "";
 
     if (!sessionId) {
       setReplayStatus("Select a persisted session to review.");
@@ -742,6 +940,8 @@
       state.review.manifest = result;
       const duration = replayDuration();
       byId("replay-seek").max = String(duration);
+      renderReviewSummary(result);
+      renderContinuityTimeline(result);
       updateReplayTime();
       clearError("replay");
       if (duration <= 0 || result.timeline?.packet_count === 0) {
@@ -758,6 +958,33 @@
     }
   }
 
+  function applyReviewFocus() {
+    const focus = state.mode === "review" ? state.review.focusSignal : "all";
+    byId("chart-grid").dataset.focus = focus;
+    document.querySelectorAll(".chart-panel[data-signal]").forEach((panel) => {
+      panel.hidden = focus !== "all" && panel.dataset.signal !== focus;
+    });
+    byId("review-focus-controls").querySelectorAll("button[data-focus]").forEach((button) => {
+      const selected = button.dataset.focus === focus;
+      button.classList.toggle("active", selected);
+      button.setAttribute("aria-pressed", String(selected));
+    });
+    requestAnimationFrame(() => {
+      for (const [name, buffer] of Object.entries(charts)) {
+        if (focus !== "all" && focus !== name) continue;
+        const width = Math.floor(buffer.element.clientWidth);
+        if (width > 0) buffer.plot.setSize({ width, height: focus === "all" ? 220 : 340 });
+        buffer.plot.syncRect();
+      }
+    });
+  }
+
+  function setReviewFocus(focus) {
+    if (!["all", "ecg", "ppg", "gsr", "imu", "temperature"].includes(focus)) return;
+    state.review.focusSignal = focus;
+    applyReviewFocus();
+  }
+
   function applyModePresentation() {
     const reviewing = state.mode === "review";
     document.body.dataset.mode = state.mode;
@@ -766,6 +993,8 @@
     byId("live-mode-button").setAttribute("aria-pressed", String(!reviewing));
     byId("review-mode-button").setAttribute("aria-pressed", String(reviewing));
     byId("review-controls").hidden = !reviewing;
+    byId("review-focus-controls").hidden = !reviewing;
+    byId("inspection-panel").hidden = !reviewing;
     setText("dashboard-title", reviewing ? "Clinician historical review" : "Clinician monitoring");
     setText(
       "dashboard-subtitle",
@@ -794,6 +1023,8 @@
           temperature: "Display conversion · 60 second window",
         };
     Object.entries(chartContexts).forEach(([name, text]) => setText(`${name}-context`, text));
+    applyReviewFocus();
+    updateReviewedSessionHighlight();
     if (state.status) applyStatus(state.status);
   }
 
@@ -809,6 +1040,8 @@
       stopReplayAnimation();
       state.review.sessionId = null;
       state.review.manifest = null;
+      state.review.inspectionPositionMs = null;
+      state.review.focusSignal = "all";
       state.review.cache.clear();
       setReplayWarning("");
       clearError("replay");
@@ -1003,6 +1236,7 @@
     cell.textContent = value;
     if (className) cell.className = className;
     row.appendChild(cell);
+    return cell;
   }
 
   function updateReviewSessionOptions(sessions) {
@@ -1022,7 +1256,7 @@
     for (const session of sessions) {
       const option = document.createElement("option");
       option.value = session.session_id;
-      option.textContent = `${session.status} · ${formatTime(session.created_at_ms)} · ${shortId(session.session_id)}`;
+      option.textContent = `${session.status} · ${formatTime(session.created_at_ms)} · ${session.device_id} · ${shortId(session.session_id)}`;
       select.appendChild(option);
     }
     select.disabled = false;
@@ -1054,13 +1288,41 @@
 
     for (const session of sessions) {
       const row = document.createElement("tr");
+      row.className = "session-row";
+      row.dataset.sessionId = session.session_id;
+      row.tabIndex = 0;
+      row.title = `Review session ${session.session_id}`;
+      row.setAttribute("aria-label", `${session.status} session from ${formatTime(session.created_at_ms)}, device ${session.device_id}`);
+      const selectForReview = () => {
+        byId("review-session-select").value = session.session_id;
+        if (state.mode !== "review") setMode("review");
+        else void loadReplaySession(session.session_id);
+      };
+      row.addEventListener("click", selectForReview);
+      row.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          selectForReview();
+        }
+      });
       appendHistoryCell(row, session.status, "table-status");
-      appendHistoryCell(row, session.session_id);
+      const sessionCell = appendHistoryCell(row, shortId(session.session_id));
+      sessionCell.title = session.session_id;
       appendHistoryCell(row, session.device_id);
       appendHistoryCell(row, formatTime(session.created_at_ms));
       appendHistoryCell(row, formatTime(session.completed_at_ms));
       body.appendChild(row);
     }
+    updateReviewedSessionHighlight();
+  }
+
+  function updateReviewedSessionHighlight() {
+    document.querySelectorAll("#history-body tr[data-session-id]").forEach((row) => {
+      row.classList.toggle(
+        "reviewed-session",
+        state.mode === "review" && row.dataset.sessionId === state.review.sessionId,
+      );
+    });
   }
 
   async function refreshHistory() {
@@ -1137,6 +1399,10 @@
   byId("replay-seek").addEventListener("input", (event) => {
     const position = Number(event.target.value);
     if (Number.isFinite(position)) setReplayPosition(position);
+  });
+  byId("review-focus-controls").addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-focus]");
+    if (button !== null) setReviewFocus(button.dataset.focus);
   });
 
   window.addEventListener("beforeunload", closeLiveSocket);

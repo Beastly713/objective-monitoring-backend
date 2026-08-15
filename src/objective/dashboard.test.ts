@@ -37,12 +37,30 @@ test("dashboard routes serve only the fixed local clinician assets", async () =>
       "replay-play-button",
       "replay-restart-button",
       "replay-seek",
+      "review-summary",
+      "timeline-marker-rail",
+      "review-focus-controls",
+      "inspection-panel",
+      "inspection-time",
     ]) {
       assert.match(html, new RegExp(`id="${controlId}"`));
     }
     for (const speed of ["0.5", "1", "2", "4"]) {
       assert.match(html, new RegExp(`<option value="${speed}"`));
     }
+    for (const label of [
+      "Persisted packets",
+      "Ingestion gaps",
+      "Stored-history gaps",
+      "Truncated packets",
+      "Device reboot",
+      "Time/backend epoch",
+      "Shared inspection",
+      "Nearest sample at or before position",
+    ]) {
+      assert.match(html, new RegExp(label));
+    }
+    assert.doesNotMatch(html, /quality score|confidence %|stress state|impairment state/i);
     assert.match(html, /\/objective-assets\/uPlot\.iife\.min\.js/);
     assert.doesNotMatch(html, /https?:\/\//);
 
@@ -70,6 +88,21 @@ test("dashboard routes serve only the fixed local clinician assets", async () =>
     assert.match(source, /Stored-history gap/);
     assert.match(source, /Time\/backend epoch/);
     assert.match(source, /buffer\.plot\.setScale\("x", \{ min: viewport\.min, max: viewport\.max \}\)/);
+    assert.match(source, /key: "objective-review-inspection"/);
+    assert.match(source, /hooks: \{ setCursor: \[handleReviewCursor\] \}/);
+    assert.match(source, /sampleAtOrBefore\("ecg"/);
+    assert.match(source, /sampleAtOrBefore\("ppg"/);
+    assert.match(source, /sampleAtOrBefore\("gsr"/);
+    assert.match(source, /sampleAtOrBefore\("imu"/);
+    assert.match(source, /sampleAtOrBefore\("temp"/);
+    assert.match(source, /renderContinuityTimeline\(result\)/);
+    assert.match(source, /timeline\.gaps/);
+    assert.match(source, /timeline\.segments/);
+    assert.match(source, /"Device reboot"/);
+    assert.match(source, /"Time\/backend epoch"/);
+    assert.doesNotMatch(source, /Epoch\/device reboot changed/);
+    assert.match(source, /state\.review\.focusSignal = focus/);
+    assert.match(source, /panel\.hidden = focus !== "all"/);
 
     const uplot = await fetch(`${origin}/objective-assets/uPlot.iife.min.js`);
     assert.equal(uplot.status, 200);
