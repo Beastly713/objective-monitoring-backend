@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Objective Monitoring · Clinician Live View</title>
+    <title>Objective Monitoring · Clinician Monitor</title>
     <link rel="stylesheet" href="/objective-assets/uPlot.min.css">
     <link rel="stylesheet" href="/objective-assets/objective.css">
     <script defer src="/objective-assets/uPlot.iife.min.js"></script>
@@ -13,8 +13,8 @@
     <header class="topbar">
       <div>
         <p class="eyebrow">Objective monitoring</p>
-        <h1>Clinician live view</h1>
-        <p class="subtitle">Raw sensor streams and operational health · live only</p>
+        <h1 id="dashboard-title">Clinician monitoring</h1>
+        <p id="dashboard-subtitle" class="subtitle">Live raw sensor streams and operational health</p>
       </div>
       <div class="headline-status" aria-label="Current monitoring state">
         <span id="device-badge" class="badge neutral">Device unknown</span>
@@ -26,6 +26,43 @@
 
     <main>
       <div id="error-banner" class="error-banner" role="alert" hidden></div>
+
+      <section class="panel mode-panel" aria-label="Monitoring mode">
+        <div class="mode-switch" role="group" aria-label="Choose live or historical review">
+          <button id="live-mode-button" class="mode-button active" type="button" aria-pressed="true">LIVE</button>
+          <button id="review-mode-button" class="mode-button" type="button" aria-pressed="false">REVIEW</button>
+        </div>
+
+        <div id="review-controls" class="review-controls" hidden>
+          <label class="review-session-field">
+            <span>Review session</span>
+            <select id="review-session-select" disabled>
+              <option value="">No persisted sessions</option>
+            </select>
+          </label>
+          <div class="replay-actions">
+            <button id="replay-play-button" class="button primary" type="button" disabled>Play</button>
+            <button id="replay-restart-button" class="button secondary" type="button" disabled>Restart</button>
+            <label class="speed-field">
+              <span>Speed</span>
+              <select id="replay-speed" disabled>
+                <option value="0.5">0.5×</option>
+                <option value="1" selected>1×</option>
+                <option value="2">2×</option>
+                <option value="4">4×</option>
+              </select>
+            </label>
+          </div>
+          <div class="replay-timeline">
+            <input id="replay-seek" type="range" min="0" max="0" value="0" step="0.001" disabled aria-label="Replay position">
+            <output id="replay-time" for="replay-seek" class="mono">T+00:00.000 / 00:00.000</output>
+          </div>
+          <div class="replay-feedback" aria-live="polite">
+            <span id="replay-status">Select a persisted session to review.</span>
+            <span id="replay-warning" class="replay-warning" hidden></span>
+          </div>
+        </div>
+      </section>
 
       <section class="overview-grid" aria-label="Monitoring controls and health">
         <article class="panel control-panel">
@@ -86,16 +123,16 @@
       <section class="signals-section" aria-labelledby="signals-heading">
         <div class="section-heading-row">
           <div>
-            <p class="section-kicker">Live signals</p>
+            <p id="signals-kicker" class="section-kicker">Live signals</p>
             <h2 id="signals-heading">Five-sensor stream</h2>
           </div>
-          <p>ESP-relative time · rolling windows · no filtering or interpretation</p>
+          <p id="signals-description">ESP-relative time · rolling windows · no filtering or interpretation</p>
         </div>
 
         <div class="chart-grid">
           <article class="panel chart-panel wide">
             <div class="chart-heading">
-              <div><h3>ECG</h3><p>Raw ADC · 10 second window</p></div>
+              <div><h3>ECG</h3><p id="ecg-context">Raw ADC · 10 second window</p></div>
               <span id="ecg-lead-state" class="sensor-reading">Lead state —</span>
             </div>
             <div id="ecg-chart" class="chart" aria-label="Live raw ECG ADC chart"></div>
@@ -103,7 +140,7 @@
 
           <article class="panel chart-panel wide">
             <div class="chart-heading">
-              <div><h3>PPG</h3><p>Raw RED and IR · 10 second window</p></div>
+              <div><h3>PPG</h3><p id="ppg-context">Raw RED and IR · 10 second window</p></div>
               <span id="ppg-reading" class="sensor-reading">RED — · IR —</span>
             </div>
             <div id="ppg-chart" class="chart" aria-label="Live raw PPG RED and IR chart"></div>
@@ -111,7 +148,7 @@
 
           <article class="panel chart-panel">
             <div class="chart-heading">
-              <div><h3>GSR / EDA</h3><p>Raw sensor trend · 30 second window</p></div>
+              <div><h3>GSR / EDA</h3><p id="gsr-context">Raw sensor trend · 30 second window</p></div>
               <span id="gsr-reading" class="sensor-reading">Raw —</span>
             </div>
             <div id="gsr-chart" class="chart" aria-label="Live raw GSR sensor chart"></div>
@@ -119,7 +156,7 @@
 
           <article class="panel chart-panel">
             <div class="chart-heading">
-              <div><h3>IMU motion</h3><p>Acceleration magnitude · 10 second window</p></div>
+              <div><h3>IMU motion</h3><p id="imu-context">Acceleration magnitude · 10 second window</p></div>
               <span id="imu-magnitude" class="sensor-reading">Magnitude — g</span>
             </div>
             <div id="imu-chart" class="chart" aria-label="Live acceleration magnitude chart"></div>
@@ -128,7 +165,7 @@
 
           <article class="panel chart-panel">
             <div class="chart-heading">
-              <div><h3>Temperature</h3><p>Display conversion · 60 second window</p></div>
+              <div><h3>Temperature</h3><p id="temperature-context">Display conversion · 60 second window</p></div>
               <span id="temperature-reading" class="sensor-reading">— °C</span>
             </div>
             <div id="temperature-chart" class="chart" aria-label="Live temperature chart"></div>
@@ -154,7 +191,7 @@
             </tbody>
           </table>
         </div>
-        <p class="history-note">Session history only. Historical waveform replay is not available in this live view.</p>
+        <p class="history-note">Select REVIEW above to inspect persisted raw waveform history without affecting live monitoring.</p>
       </section>
     </main>
   </body>

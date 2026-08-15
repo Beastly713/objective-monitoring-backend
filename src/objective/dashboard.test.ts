@@ -30,6 +30,19 @@ test("dashboard routes serve only the fixed local clinician assets", async () =>
     for (const chartId of ["ecg-chart", "ppg-chart", "gsr-chart", "imu-chart", "temperature-chart"]) {
       assert.match(html, new RegExp(`id="${chartId}"`));
     }
+    for (const controlId of [
+      "live-mode-button",
+      "review-mode-button",
+      "review-session-select",
+      "replay-play-button",
+      "replay-restart-button",
+      "replay-seek",
+    ]) {
+      assert.match(html, new RegExp(`id="${controlId}"`));
+    }
+    for (const speed of ["0.5", "1", "2", "4"]) {
+      assert.match(html, new RegExp(`<option value="${speed}"`));
+    }
     assert.match(html, /\/objective-assets\/uPlot\.iife\.min\.js/);
     assert.doesNotMatch(html, /https?:\/\//);
 
@@ -44,6 +57,19 @@ test("dashboard routes serve only the fixed local clinician assets", async () =>
     assert.match(source, /packet\.epoch_id !== state\.currentEpochId/);
     assert.match(source, /currentSequence > state\.lastLiveSequence \+ 1/);
     assert.match(source, /Live delivery gap before seq/);
+    assert.match(source, /state\.mode !== "live"/);
+    assert.match(source, /\/replay`/);
+    assert.match(source, /\/replay\/packets\?from_ms=/);
+    assert.match(source, /const MAX_REPLAY_CACHE_CHUNKS = 3/);
+    assert.match(source, /replayPositionMs \+ elapsedRealMs \* state\.review\.replaySpeed/);
+    assert.match(source, /requestAnimationFrame\(replayAnimationFrame\)/);
+    assert.match(source, /baseMs \+ sample\[0\] \/ 1_000/);
+    assert.match(source, /packet\.history_gap_before > 0/);
+    assert.match(source, /packet\.boot_id !== previousPacket\.boot_id/);
+    assert.match(source, /packet\.epoch_id !== previousPacket\.epoch_id/);
+    assert.match(source, /Stored-history gap/);
+    assert.match(source, /Time\/backend epoch/);
+    assert.match(source, /buffer\.plot\.setScale\("x", \{ min: viewport\.min, max: viewport\.max \}\)/);
 
     const uplot = await fetch(`${origin}/objective-assets/uPlot.iife.min.js`);
     assert.equal(uplot.status, 200);
