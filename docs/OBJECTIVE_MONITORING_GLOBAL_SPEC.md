@@ -347,7 +347,7 @@ one or more boot epochs
 
 For the prototype, use one normal backend application rather than unnecessary distributed infrastructure.
 
-Implemented Phase A boundary:
+Implemented backend boundary:
 
 ```text
 Node.js + TypeScript backend
@@ -362,16 +362,22 @@ sequence/gap handling
 time mapping
 application ACK
 accepted-packet handoff
+durable session identity/recovery
+bounded asynchronous packet persistence
+session-scoped live fan-out
 ```
 
-Next-stage responsibilities attach downstream from the accepted-packet handoff:
+The accepted-packet handoff now has two independent synchronous subscribers:
 
 ```text
-live fan-out
-asynchronous persistence handoff
+AcceptedPacketBus
+    ├── bounded enqueue → asynchronous PostgreSQL worker
+    └── session-scoped live WebSocket fan-out
 ```
 
-Web and mobile clients consume the **same backend contract**.
+Neither downstream consumer changes the device ACK boundary. PostgreSQL work is not awaited by packet ingestion, and a slow clinician client may lose display frames without slowing device ingestion or storage.
+
+The web client, and any future mobile clients, consume the **same backend contract**.
 
 They never connect directly to the ESP32.
 
@@ -417,31 +423,34 @@ Do not fabricate missing samples.
 
 A device reboot creates a new boot epoch.
 
-Live and replay visualizations should be able to show discontinuities rather than drawing misleading continuous lines across:
+The live dashboard shows discontinuities rather than drawing misleading continuous lines across:
 
 - missing packets,
 - disconnected periods,
 - device reboots.
 
+It also detects packets missed only by that clinician connection, even when backend ingestion remained continuous. Future replay visualization must preserve the same discontinuity rule.
+
 ---
 
 ## 14. Persistence Is a Required Capability
 
-The final objective branch is not live-view-only.
+The objective branch is not live-view-only. Phase B established durable PostgreSQL storage for monitoring sessions and accepted raw packets.
 
-Accepted data must be storable so that previous monitoring sessions can later be:
+Accepted sessions are durably listable now. Raw packets are retained so that monitoring sessions can later be:
 
-- listed,
 - reopened,
 - replayed,
 - processed,
 - compared,
 - used for future derived features.
 
-Current storage direction:
+Implemented storage:
 
 ```text
 PostgreSQL
+├── durable objective session metadata
+└── one immutable raw row per accepted ~100 ms packet
 ```
 
 Store raw data primarily at the existing ~100 ms packet level rather than immediately creating a database row for every individual sensor sample.
@@ -450,19 +459,19 @@ Keep session metadata separate from raw packet data.
 
 Derived/processed data should be stored separately from immutable raw source data.
 
-The exact schema is phase-level implementation detail and is intentionally not globally locked yet.
+The durable duplicate boundary is the accepted packet identity `(session_id, boot_id, seq)`. Completed sessions remain queryable, and only non-completed sessions are eligible for backend restart recovery. Historical raw-packet query and waveform replay remain Phase C work.
 
 ---
 
 ## 15. Live Client Model
 
-The backend should be able to fan out the same accepted stream to:
+The backend fans out the same accepted stream to:
 
 ```text
 web clinician dashboard
-mobile clinician application
-future authorized clients
 ```
+
+Mobile and other authorized clients remain future consumers of this backend contract.
 
 A slow frontend must not slow device ingestion.
 
@@ -476,7 +485,7 @@ Historical completeness belongs to persistence/replay, not to an ever-growing li
 
 Visualization is an important product/demo output, but it must remain downstream from acquisition and ingestion.
 
-Useful live views include:
+The implemented clinician dashboard provides:
 
 ```text
 ECG waveform
@@ -485,9 +494,10 @@ GSR trend
 IMU / motion
 skin/local temperature
 stream health / sample-rate / gap status
+durable session controls and recent session history
 ```
 
-Simple display/unit conversions are acceptable.
+It uses bounded rolling windows and ESP-relative sample timing. IMU acceleration magnitude and temperature Celsius are display-only conversions; persisted packets remain raw.
 
 Do not label raw or lightly transformed physiological signals as clinical interpretations such as stress, intoxication, impairment, or diagnosis without a separately justified processing/decision layer.
 
@@ -598,14 +608,14 @@ ACK:<seq>
 The completed boundary includes:
 
 - provisioned device authentication and one active socket per device,
-- backend-owned in-memory monitoring sessions,
+- backend-owned runtime monitoring sessions (process-only in Phase A and durably backed after Phase B),
 - WAITING, LIVE, DISCONNECTED, and COMPLETED session states,
 - START/STOP control and safe connected-idle operation,
 - strict raw Schema V1 validation without sensor conversion,
 - per-session/per-boot sequence tracking and time metadata,
 - duplicate suppression and explicit forward-gap reporting,
-- session resume across device/WebSocket reconnects while the backend remains alive,
-- an accepted-packet handoff ready for live fan-out and persistence.
+- session resume across device/WebSocket reconnects, with Phase B additionally restoring non-completed sessions across backend restarts,
+- an accepted-packet handoff now consumed independently by live fan-out and asynchronous persistence.
 
 The physical validation sustained approximately 10 packets/second with healthy acquisition and ACK behavior. Durable evidence is recorded in:
 
@@ -613,11 +623,50 @@ The physical validation sustained approximately 10 packets/second with healthy a
 OBJECTIVE_MONITORING_PHASE_A_VALIDATION.md
 ```
 
-Phase A deliberately keeps sessions and packets in process memory. A full backend-process restart therefore loses the active session; the device reauthenticates safely and remains idle until a new session is created. Durable recovery belongs to the persistence milestone.
+At the Phase A boundary, sessions and packets deliberately existed only in process memory, so a backend restart lost the active session. Phase B superseded that limitation for session identity: non-completed sessions are now durably recovered, while completed sessions are never resurrected. Packet ACK semantics remain unchanged and do not imply a PostgreSQL commit.
 
 ---
 
-## 20. Short Completion Path
+## 20. Phase B Completion Status
+
+Phase B — live monitoring and persistence — was completed and physically validated on 2026-08-16.
+
+Validated path:
+
+```text
+physical five-sensor ESP32 stream
+    ↓
+validated AcceptedPacketBus handoff
+    ├── bounded asynchronous persistence → PostgreSQL
+    └── session-scoped live fan-out → clinician dashboard
+```
+
+The completed boundary includes:
+
+- durable session creation before intentional `START:<session_id>`,
+- one non-completed session per device and permanent completed-session history,
+- backend-restart recovery of the same non-completed session identity,
+- normalization of stale persisted LIVE state before serving,
+- completed-session non-resurrection,
+- one immutable PostgreSQL row per accepted Schema-V1 packet,
+- a bounded 1,000-packet in-process storage queue with observable degradation, errors, and drops,
+- database-independent ingestion, ACK, and live fan-out,
+- `/ws/objective/live/:sessionId` live-from-now delivery with slow-client frame dropping,
+- `/api/objective/status` device, ingestion, live, session, and storage health,
+- `/clinician/objective` session control, operational health, recent durable history, and five bounded rolling live plots,
+- visible discontinuities for backend gaps, clinician-only delivery gaps, and device boot/epoch changes.
+
+Physical validation covered sustained five-sensor streaming, raw persistence, START/STOP/history, active-session backend recovery, completed-session non-resurrection, temporary PostgreSQL loss and catch-up, slow-client isolation, forward gaps, clinician reconnect loss, and ESP32 reboot epochs. Evidence and known limitations are recorded in:
+
+```text
+OBJECTIVE_MONITORING_PHASE_B_VALIDATION.md
+```
+
+Phase B does not provide historical waveform queries, replay, signal processing, physiological interpretation, patient integration, or production clinician authentication. Those boundaries remain unchanged; replay and justified presentation/processing are next.
+
+---
+
+## 21. Short Completion Path
 
 The project should remain on a short path to a demonstrable end state.
 
@@ -654,7 +703,7 @@ Do not create many artificial phases inside these milestones.
 
 ---
 
-## 21. Change Policy
+## 22. Change Policy
 
 This file is intentionally conservative.
 
