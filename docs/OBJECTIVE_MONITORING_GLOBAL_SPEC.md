@@ -691,13 +691,15 @@ session history
 
 Phase B was physically validated with the real five-sensor ESP32, PostgreSQL, and clinician browser path. See [OBJECTIVE_MONITORING_PHASE_B_VALIDATION.md](OBJECTIVE_MONITORING_PHASE_B_VALIDATION.md).
 
-### Milestone C — Replay + minimal processing/presentation — next
+### Milestone C — Replay + minimal processing/presentation — complete
 
 ```text
 historical replay
 useful unit conversions / signal-quality presentation
 only justified processing/features
 ```
+
+Phase C was validated with real persisted five-sensor history, PostgreSQL, the clinician browser replay path, and a physical LIVE regression. See [OBJECTIVE_MONITORING_PHASE_C_VALIDATION.md](OBJECTIVE_MONITORING_PHASE_C_VALIDATION.md).
 
 Do not create many artificial phases inside these milestones.
 

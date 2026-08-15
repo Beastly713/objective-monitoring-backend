@@ -95,6 +95,17 @@ test("dashboard routes serve only the fixed local clinician assets", async () =>
     assert.match(source, /sampleAtOrBefore\("gsr"/);
     assert.match(source, /sampleAtOrBefore\("imu"/);
     assert.match(source, /sampleAtOrBefore\("temp"/);
+    assert.match(source, /requestedPosition > state\.review\.replayPositionMs/);
+    assert.match(source, /Replay has not presented data at this cursor position yet/);
+    assert.doesNotMatch(
+      source,
+      /Math\.min\(requestedPosition, state\.review\.replayPositionMs\)/,
+    );
+    assert.match(source, /latestContinuityBarrierAtOrBefore\(requestedPosition\)/);
+    assert.match(source, /timeline\?\.gaps/);
+    assert.match(source, /timeline\?\.segments/);
+    assert.match(source, /sampleReplayMs >= continuousStartMs/);
+    assert.match(source, /No signal samples after continuity boundary/);
     assert.match(source, /renderContinuityTimeline\(result\)/);
     assert.match(source, /timeline\.gaps/);
     assert.match(source, /timeline\.segments/);

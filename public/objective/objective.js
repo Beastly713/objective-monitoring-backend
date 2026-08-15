@@ -617,8 +617,29 @@
       Math.abs(segment.start_replay_ms - packet.replay_t0_ms) < 0.001) ?? null;
   }
 
-  function sampleAtOrBefore(signal, position, viewport) {
+  function latestContinuityBarrierAtOrBefore(position) {
+    const timeline = state.review.manifest?.timeline;
+    let barrierMs = null;
+    for (const gap of Array.isArray(timeline?.gaps) ? timeline.gaps : []) {
+      if (gap.replay_ms <= position && (barrierMs === null || gap.replay_ms > barrierMs)) {
+        barrierMs = gap.replay_ms;
+      }
+    }
+    for (const segment of Array.isArray(timeline?.segments) ? timeline.segments : []) {
+      if (
+        segment.boundary_type !== "session_start" &&
+        segment.start_replay_ms <= position &&
+        (barrierMs === null || segment.start_replay_ms > barrierMs)
+      ) {
+        barrierMs = segment.start_replay_ms;
+      }
+    }
+    return barrierMs;
+  }
+
+  function sampleAtOrBefore(signal, position, viewport, barrierMs) {
     let match = null;
+    const continuousStartMs = Math.max(viewport.min, barrierMs ?? viewport.min);
     for (const entry of state.review.cache.values()) {
       if (entry.status !== "ready") continue;
       for (const packet of entry.packets) {
@@ -627,7 +648,7 @@
         for (const sample of samples) {
           const sampleReplayMs = packet.replay_t0_ms + sample[0] / 1_000;
           if (
-            sampleReplayMs >= viewport.min &&
+            sampleReplayMs >= continuousStartMs &&
             sampleReplayMs <= position &&
             (match === null || sampleReplayMs > match.replayMs)
           ) {
@@ -643,7 +664,6 @@
     if (state.mode !== "review" || state.review.manifest === null) return;
     const viewport = replayViewport(state.review.replayPositionMs);
     const requestedPosition = state.review.inspectionPositionMs ?? state.review.replayPositionMs;
-    const position = Math.min(requestedPosition, state.review.replayPositionMs);
     const prefix = state.review.inspectionPositionMs === null ? "Playback" : "Cursor";
     setText("inspection-time", `${prefix} T+${formatReplayTime(requestedPosition)}`);
     for (const id of [
@@ -655,7 +675,14 @@
     ]) setText(id, "—");
     resetSignalReadings();
 
-    const ecg = sampleAtOrBefore("ecg", position, viewport)?.sample ?? null;
+    if (requestedPosition > state.review.replayPositionMs) {
+      setText("inspection-policy", "Replay has not presented data at this cursor position yet");
+      return;
+    }
+
+    const barrierMs = latestContinuityBarrierAtOrBefore(requestedPosition);
+
+    const ecg = sampleAtOrBefore("ecg", requestedPosition, viewport, barrierMs)?.sample ?? null;
     if (ecg !== null) {
       const leads = [];
       if (ecg[2] === 1) leads.push("LO+");
@@ -666,21 +693,21 @@
       setText("inspection-ecg", `ADC ${formatNumber(ecg[1])} · ${leadState}`);
     }
 
-    const ppg = sampleAtOrBefore("ppg", position, viewport)?.sample ?? null;
+    const ppg = sampleAtOrBefore("ppg", requestedPosition, viewport, barrierMs)?.sample ?? null;
     if (ppg !== null) {
       const value = `RED ${formatNumber(ppg[1])} · IR ${formatNumber(ppg[2])}`;
       setText("ppg-reading", value);
       setText("inspection-ppg", value);
     }
 
-    const gsr = sampleAtOrBefore("gsr", position, viewport)?.sample ?? null;
+    const gsr = sampleAtOrBefore("gsr", requestedPosition, viewport, barrierMs)?.sample ?? null;
     if (gsr !== null) {
       const value = `Raw ${formatNumber(gsr[1])}`;
       setText("gsr-reading", value);
       setText("inspection-gsr", value);
     }
 
-    const imu = sampleAtOrBefore("imu", position, viewport)?.sample ?? null;
+    const imu = sampleAtOrBefore("imu", requestedPosition, viewport, barrierMs)?.sample ?? null;
     if (imu !== null) {
       const acceleration = imu.slice(1, 4).map((value) => value / 16_384);
       const gyro = imu.slice(4, 7).map((value) => value / 131);
@@ -693,7 +720,7 @@
       setText("inspection-imu", `${magnitude.toFixed(3)} g`);
     }
 
-    const temperature = sampleAtOrBefore("temp", position, viewport)?.sample ?? null;
+    const temperature = sampleAtOrBefore("temp", requestedPosition, viewport, barrierMs)?.sample ?? null;
     if (temperature !== null) {
       const value = `${(temperature[1] * 0.0078125).toFixed(2)} °C`;
       setText("temperature-reading", value);
@@ -703,7 +730,9 @@
       "inspection-policy",
       [ecg, ppg, gsr, imu, temperature].some((sample) => sample !== null)
         ? "Nearest sample at or before position · no interpolation"
-        : "No signal samples in the loaded historical view",
+        : barrierMs === null
+          ? "No signal samples in the loaded historical view"
+          : `No signal samples after continuity boundary at T+${formatReplayTime(barrierMs)}`,
     );
   }
 
