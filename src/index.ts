@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 
 import { AcceptedPacketBus } from "./objective/acceptedPacketBus.js";
+import { handleObjectiveDashboardRequest } from "./objective/dashboard/dashboardRoutes.js";
 import { createObjectiveDeviceGateway, OBJECTIVE_DEVICE_PATH } from "./objective/deviceGateway.js";
 import { ObjectiveDeviceRegistry } from "./objective/deviceRegistry.js";
 import { createObjectiveLiveGateway } from "./objective/live/liveGateway.js";
@@ -90,11 +91,17 @@ async function startBackend(): Promise<void> {
         return;
       }
 
-      void handleObjectiveSessionRequest(request, response, {
-        sessionManager,
-        sessionRepository,
-        deviceRegistry,
-      })
+      void handleObjectiveDashboardRequest(request, response)
+        .then((handled) => {
+          if (handled) {
+            return true;
+          }
+          return handleObjectiveSessionRequest(request, response, {
+            sessionManager,
+            sessionRepository,
+            deviceRegistry,
+          });
+        })
         .then((handled) => {
           if (!handled) {
             response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });

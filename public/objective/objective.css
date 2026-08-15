@@ -1,0 +1,186 @@
+:root {
+  color-scheme: dark;
+  --bg: #07111f;
+  --panel: #0d1b2b;
+  --panel-raised: #102238;
+  --border: #203a53;
+  --text: #e8f0f7;
+  --muted: #91a6b8;
+  --accent: #46c2b3;
+  --accent-strong: #1da998;
+  --blue: #5ea8ff;
+  --red: #ff6b78;
+  --amber: #f1b85b;
+  --green: #58d68d;
+  --shadow: 0 14px 34px rgb(0 0 0 / 22%);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-width: 760px;
+  background:
+    radial-gradient(circle at 85% -10%, rgb(49 126 146 / 18%), transparent 34rem),
+    var(--bg);
+  color: var(--text);
+}
+
+button, input { font: inherit; }
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 2rem;
+  padding: 1.35rem clamp(1.5rem, 4vw, 4.5rem);
+  border-bottom: 1px solid var(--border);
+  background: rgb(7 17 31 / 92%);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  backdrop-filter: blur(12px);
+}
+
+h1, h2, h3, p { margin-top: 0; }
+h1 { margin-bottom: .25rem; font-size: clamp(1.55rem, 2vw, 2.15rem); letter-spacing: -.03em; }
+h2 { margin-bottom: 0; font-size: 1.22rem; letter-spacing: -.015em; }
+h3 { margin-bottom: .2rem; font-size: .96rem; }
+
+.eyebrow, .section-kicker {
+  margin-bottom: .3rem;
+  color: var(--accent);
+  font-size: .7rem;
+  font-weight: 750;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+
+.subtitle, .muted, .section-heading-row > p, .chart-heading p, .control-note, .history-note {
+  color: var(--muted);
+}
+
+.subtitle { margin-bottom: 0; font-size: .86rem; }
+
+.headline-status { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .55rem; }
+
+.badge, .state-value {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.8rem;
+  padding: .32rem .68rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #12243a;
+  color: var(--muted);
+  font-size: .74rem;
+  font-weight: 700;
+}
+
+.badge::before {
+  width: .42rem;
+  height: .42rem;
+  margin-right: .42rem;
+  border-radius: 50%;
+  background: currentColor;
+  content: "";
+}
+
+.good { color: var(--green); border-color: rgb(88 214 141 / 40%); background: rgb(88 214 141 / 8%); }
+.warn { color: var(--amber); border-color: rgb(241 184 91 / 40%); background: rgb(241 184 91 / 8%); }
+.bad { color: var(--red); border-color: rgb(255 107 120 / 40%); background: rgb(255 107 120 / 8%); }
+.neutral { color: var(--muted); }
+
+main { padding: 1.6rem clamp(1.5rem, 4vw, 4.5rem) 4rem; }
+
+.error-banner {
+  margin-bottom: 1rem;
+  padding: .8rem 1rem;
+  border: 1px solid rgb(255 107 120 / 50%);
+  border-radius: .65rem;
+  background: rgb(255 107 120 / 10%);
+  color: #ffbdc3;
+  font-size: .86rem;
+}
+
+.overview-grid {
+  display: grid;
+  grid-template-columns: minmax(320px, .8fr) minmax(520px, 1.6fr);
+  gap: 1rem;
+}
+
+.panel {
+  border: 1px solid var(--border);
+  border-radius: .85rem;
+  background: linear-gradient(145deg, rgb(16 34 56 / 96%), rgb(11 25 42 / 96%));
+  box-shadow: var(--shadow);
+}
+
+.control-panel, .health-panel, .history-panel { padding: 1.15rem 1.25rem; }
+
+.panel-heading, .chart-heading, .section-heading-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.session-details { margin: 1.1rem 0; }
+.session-details div, .health-group dl div { display: flex; justify-content: space-between; gap: 1rem; }
+.session-details div { padding: .5rem 0; border-bottom: 1px solid rgb(32 58 83 / 65%); }
+dt { color: var(--muted); }
+dd { margin: 0; text-align: right; }
+.session-details dt, .session-details dd { font-size: .8rem; }
+.session-details .mono { max-width: 18rem; overflow: hidden; text-overflow: ellipsis; }
+.mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+
+.control-actions { display: flex; gap: .7rem; }
+.button {
+  min-height: 2.45rem;
+  padding: .55rem .95rem;
+  border: 1px solid transparent;
+  border-radius: .55rem;
+  color: #f4fbff;
+  cursor: pointer;
+  font-weight: 720;
+}
+.button.primary { background: var(--accent-strong); }
+.button.danger { background: #b84450; }
+.button:hover:not(:disabled) { filter: brightness(1.12); }
+.button:disabled { opacity: .38; cursor: not-allowed; }
+.control-note, .history-note { margin: .8rem 0 0; font-size: .72rem; line-height: 1.45; }
+
+.rate-value { color: var(--accent); font-size: .92rem; font-weight: 750; }
+.health-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-top: 1rem; }
+.health-group h3 { padding-bottom: .4rem; border-bottom: 1px solid var(--border); color: #c7d8e6; }
+.health-group dl { margin: 0; }
+.health-group dl div { padding: .28rem 0; font-size: .76rem; }
+
+.signals-section { margin-top: 2rem; }
+.section-heading-row { align-items: end; margin-bottom: .8rem; }
+.section-heading-row > p { margin-bottom: .1rem; font-size: .76rem; }
+.chart-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 1rem; }
+.chart-panel { grid-column: span 2; min-width: 0; padding: .95rem .95rem .7rem; }
+.chart-panel.wide { grid-column: span 3; }
+.chart-heading p { margin-bottom: 0; font-size: .72rem; }
+.sensor-reading { color: #c9dae8; font-size: .73rem; text-align: right; }
+.detail-reading { margin: .35rem .2rem 0; color: var(--muted); font-size: .66rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chart { min-height: 220px; margin-top: .65rem; }
+.uplot { font-family: inherit; }
+.uplot .u-legend { font-size: .68rem; }
+.uplot .u-axis { color: var(--muted); }
+
+.history-panel { margin-top: 2rem; }
+.table-wrap { margin-top: 1rem; overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: .76rem; }
+th { padding: .58rem .65rem; border-bottom: 1px solid var(--border); color: var(--muted); text-align: left; font-weight: 650; }
+td { padding: .62rem .65rem; border-bottom: 1px solid rgb(32 58 83 / 55%); }
+td:nth-child(2) { font-family: "SFMono-Regular", Consolas, monospace; }
+.table-status { font-weight: 750; }
+.empty-state { padding: 1.5rem; color: var(--muted); text-align: center; }
+
+@media (max-width: 1100px) {
+  .overview-grid { grid-template-columns: 1fr; }
+  .chart-panel, .chart-panel.wide { grid-column: span 3; }
+}

@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Objective Monitoring · Clinician Live View</title>
+    <link rel="stylesheet" href="/objective-assets/uPlot.min.css">
+    <link rel="stylesheet" href="/objective-assets/objective.css">
+    <script defer src="/objective-assets/uPlot.iife.min.js"></script>
+    <script defer src="/objective-assets/objective.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Objective monitoring</p>
+        <h1>Clinician live view</h1>
+        <p class="subtitle">Raw sensor streams and operational health · live only</p>
+      </div>
+      <div class="headline-status" aria-label="Current monitoring state">
+        <span id="device-badge" class="badge neutral">Device unknown</span>
+        <span id="session-badge" class="badge neutral">No session</span>
+        <span id="storage-badge" class="badge neutral">Storage unknown</span>
+        <span id="live-badge" class="badge neutral">Live socket idle</span>
+      </div>
+    </header>
+
+    <main>
+      <div id="error-banner" class="error-banner" role="alert" hidden></div>
+
+      <section class="overview-grid" aria-label="Monitoring controls and health">
+        <article class="panel control-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="section-kicker">Session control</p>
+              <h2>Current monitoring</h2>
+            </div>
+            <span id="session-state" class="state-value">Loading…</span>
+          </div>
+
+          <dl class="session-details">
+            <div><dt>Configured device</dt><dd id="configured-device">—</dd></div>
+            <div><dt>Session ID</dt><dd id="session-id" class="mono">—</dd></div>
+            <div><dt>Started</dt><dd id="session-created">—</dd></div>
+          </dl>
+
+          <div class="control-actions">
+            <button id="start-button" class="button primary" type="button" disabled>Start monitoring</button>
+            <button id="stop-button" class="button danger" type="button" disabled>Stop monitoring</button>
+          </div>
+          <p class="control-note">A disconnected device may hold a WAITING or DISCONNECTED session until it reconnects.</p>
+        </article>
+
+        <article class="panel health-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="section-kicker">Operations</p>
+              <h2>Stream health</h2>
+            </div>
+            <span id="packet-rate" class="rate-value">— packets/s</span>
+          </div>
+          <div class="health-grid">
+            <div class="health-group">
+              <h3>Ingestion</h3>
+              <dl>
+                <div><dt>Accepted</dt><dd id="accepted-packets">—</dd></div>
+                <div><dt>Latest sequence</dt><dd id="latest-sequence">—</dd></div>
+                <div><dt>Sequence gaps</dt><dd id="sequence-gaps">—</dd></div>
+                <div><dt>Invalid / duplicates</dt><dd id="invalid-duplicates">—</dd></div>
+                <div><dt>ACKs / reconnects</dt><dd id="acks-reconnects">—</dd></div>
+              </dl>
+            </div>
+            <div class="health-group">
+              <h3>Downstream</h3>
+              <dl>
+                <div><dt>Live clients / drops</dt><dd id="live-health">—</dd></div>
+                <div><dt>Storage queue</dt><dd id="storage-queue">—</dd></div>
+                <div><dt>Persisted packets</dt><dd id="persisted-packets">—</dd></div>
+                <div><dt>Storage errors / drops</dt><dd id="storage-errors">—</dd></div>
+                <div><dt>Epoch</dt><dd id="epoch-state">Waiting for data</dd></div>
+              </dl>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section class="signals-section" aria-labelledby="signals-heading">
+        <div class="section-heading-row">
+          <div>
+            <p class="section-kicker">Live signals</p>
+            <h2 id="signals-heading">Five-sensor stream</h2>
+          </div>
+          <p>ESP-relative time · rolling windows · no filtering or interpretation</p>
+        </div>
+
+        <div class="chart-grid">
+          <article class="panel chart-panel wide">
+            <div class="chart-heading">
+              <div><h3>ECG</h3><p>Raw ADC · 10 second window</p></div>
+              <span id="ecg-lead-state" class="sensor-reading">Lead state —</span>
+            </div>
+            <div id="ecg-chart" class="chart" aria-label="Live raw ECG ADC chart"></div>
+          </article>
+
+          <article class="panel chart-panel wide">
+            <div class="chart-heading">
+              <div><h3>PPG</h3><p>Raw RED and IR · 10 second window</p></div>
+              <span id="ppg-reading" class="sensor-reading">RED — · IR —</span>
+            </div>
+            <div id="ppg-chart" class="chart" aria-label="Live raw PPG RED and IR chart"></div>
+          </article>
+
+          <article class="panel chart-panel">
+            <div class="chart-heading">
+              <div><h3>GSR / EDA</h3><p>Raw sensor trend · 30 second window</p></div>
+              <span id="gsr-reading" class="sensor-reading">Raw —</span>
+            </div>
+            <div id="gsr-chart" class="chart" aria-label="Live raw GSR sensor chart"></div>
+          </article>
+
+          <article class="panel chart-panel">
+            <div class="chart-heading">
+              <div><h3>IMU motion</h3><p>Acceleration magnitude · 10 second window</p></div>
+              <span id="imu-magnitude" class="sensor-reading">Magnitude — g</span>
+            </div>
+            <div id="imu-chart" class="chart" aria-label="Live acceleration magnitude chart"></div>
+            <p id="imu-reading" class="detail-reading mono">Accel — · Gyro —</p>
+          </article>
+
+          <article class="panel chart-panel">
+            <div class="chart-heading">
+              <div><h3>Temperature</h3><p>Display conversion · 60 second window</p></div>
+              <span id="temperature-reading" class="sensor-reading">— °C</span>
+            </div>
+            <div id="temperature-chart" class="chart" aria-label="Live temperature chart"></div>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel history-panel" aria-labelledby="history-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Durable history</p>
+            <h2 id="history-heading">Recent sessions</h2>
+          </div>
+          <span id="history-updated" class="muted">Loading…</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Status</th><th>Session ID</th><th>Device</th><th>Created</th><th>Completed</th></tr>
+            </thead>
+            <tbody id="history-body">
+              <tr><td colspan="5" class="empty-state">Loading persistent sessions…</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="history-note">Session history only. Historical waveform replay is not available in this live view.</p>
+      </section>
+    </main>
+  </body>
+</html>
