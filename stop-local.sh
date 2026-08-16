@@ -34,13 +34,43 @@ container_env_value() {
 backend_port_state() {
   node -e '
     const net = require("node:net");
-    const socket = net.createConnection({ host: "127.0.0.1", port: 8080 });
-    socket.setTimeout(750);
-    socket.once("connect", () => { socket.destroy(); process.exit(10); });
-    socket.once("timeout", () => { socket.destroy(); process.exit(12); });
-    socket.once("error", (error) => {
-      process.exit(error.code === "ECONNREFUSED" ? 0 : 12);
-    });
+
+    function probe(options, unsupportedIsSafe = false) {
+      return new Promise((resolve) => {
+        const server = net.createServer();
+        server.once("error", (error) => {
+          if (error.code === "EADDRINUSE") resolve("occupied");
+          else if (
+            unsupportedIsSafe &&
+            ["EAFNOSUPPORT", "EADDRNOTAVAIL"].includes(error.code)
+          ) resolve("unsupported");
+          else resolve("ambiguous");
+        });
+        server.listen(options, () => {
+          server.close((error) => resolve(error ? "ambiguous" : "available"));
+        });
+      });
+    }
+
+    (async () => {
+      const ipv4 = await probe({
+        host: "0.0.0.0",
+        port: 8080,
+        exclusive: true,
+      });
+      if (ipv4 === "occupied") process.exit(10);
+      if (ipv4 !== "available") process.exit(12);
+
+      const ipv6 = await probe({
+        host: "::",
+        port: 8080,
+        exclusive: true,
+        ipv6Only: true,
+      }, true);
+      if (ipv6 === "occupied") process.exit(10);
+      if (!["available", "unsupported"].includes(ipv6)) process.exit(12);
+      process.exit(0);
+    })().catch(() => process.exit(12));
   '
 }
 
@@ -73,7 +103,7 @@ else
   port_state=$?
   case "$port_state" in
     10)
-      fail "port 8080 is still listening. Stop npm run dev with Ctrl+C before stopping PostgreSQL."
+      fail "port 8080 is still listening on a local interface. Stop npm run dev with Ctrl+C before stopping PostgreSQL."
       ;;
     *)
       fail "could not safely determine whether port 8080 is inactive; PostgreSQL remains running."

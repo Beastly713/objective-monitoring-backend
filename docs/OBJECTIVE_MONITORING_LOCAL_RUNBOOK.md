@@ -21,7 +21,7 @@ These helpers operate only on the existing local objective PostgreSQL container 
 4. Stop the backend with Ctrl+C.
 5. Run `./stop-local.sh`.
 
-`stop-local.sh` does not stop the backend or interact with the ESP32. It refuses to stop PostgreSQL if port 8080 is still listening, if it cannot verify the session table, or if any persisted session is not `COMPLETED`.
+`stop-local.sh` does not stop the backend or interact with the ESP32. It refuses to stop PostgreSQL if port 8080 is still listening on any local IPv4 or IPv6 interface, if it cannot verify the session table, or if any persisted session is not `COMPLETED`.
 
 ## Safety boundaries
 
