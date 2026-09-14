@@ -16,16 +16,21 @@
 
 #include <stdarg.h>
 #include <stdint.h>
+#include <time.h>
 
 // ============================================================
 //                    USER NETWORK CONFIG
 // ============================================================
 // Local values are supplied by an ignored firmware/secrets.h file.
 #include "secrets.h"
+#include "render_root_ca.h"
 
-constexpr uint16_t WS_PORT = 8080;
+constexpr uint16_t WS_PORT = 443;
 const char *WS_PATH = "/ws/objective/device";
 const char *FIRMWARE_VERSION = "5.3";
+
+// TLS certificate validation requires a real wall clock on first boot.
+constexpr time_t MINIMUM_VALID_TLS_TIME = 1704067200; // 2024-01-01 UTC
 
 // ============================================================
 //                         HARDWARE
@@ -1432,6 +1437,8 @@ void networkTask(void *parameter) {
   NetworkFrame frame;
 
   bool wsStartedForCurrentWiFi = false;
+  bool timeSyncRequested = false;
+  bool timeSyncWaitLogged = false;
 
   int64_t lastWiFiReconnectAttempt = 0;
 
@@ -1469,10 +1476,26 @@ void networkTask(void *parameter) {
     }
 
     if (!wsStartedForCurrentWiFi) {
-      webSocket.begin(
+      if (!timeSyncRequested) {
+        configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+        timeSyncRequested = true;
+      }
+
+      if (time(nullptr) < MINIMUM_VALID_TLS_TIME) {
+        if (!timeSyncWaitLogged) {
+          Serial.println("Waiting for NTP time before secure WebSocket connection");
+          timeSyncWaitLogged = true;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(250));
+        continue;
+      }
+
+      webSocket.beginSslWithCA(
           WS_HOST,
           WS_PORT,
-          WS_PATH);
+          WS_PATH,
+          RENDER_ROOT_CA);
 
       webSocket.setReconnectInterval(2000);
 
@@ -1772,7 +1795,7 @@ void setup() {
   Serial.print("Wi-Fi connecting to: ");
   Serial.println(WIFI_SSID);
 
-  Serial.print("WebSocket target: ws://");
+  Serial.print("WebSocket target: wss://");
   Serial.print(WS_HOST);
   Serial.print(":");
   Serial.print(WS_PORT);
