@@ -42,6 +42,13 @@ test("dashboard routes serve only the fixed local clinician assets", async () =>
       "review-focus-controls",
       "inspection-panel",
       "inspection-time",
+      "analysis-pattern",
+      "analysis-evidence",
+      "analysis-window",
+      "analysis-supporting-signals",
+      "analysis-feature-summary",
+      "analysis-quality-summary",
+      "analysis-rule-list",
     ]) {
       assert.match(html, new RegExp(`id="${controlId}"`));
     }
@@ -90,6 +97,15 @@ test("dashboard routes serve only the fixed local clinician assets", async () =>
     assert.match(source, /buffer\.plot\.setScale\("x", \{ min: viewport\.min, max: viewport\.max \}\)/);
     assert.match(source, /key: "objective-review-inspection"/);
     assert.match(source, /hooks: \{ setCursor: \[handleReviewCursor\] \}/);
+    assert.match(source, /message\.type === "analysis_update"/);
+    assert.match(source, /handleLiveAnalysisUpdate\(message\.result\)/);
+    assert.match(source, /function fetchHistoricalAnalysis\(sessionId, fromMs, durationMs/);
+    assert.match(source, /function renderHistoricalAnalysisAtCursor\(replayPositionMs\)/);
+    assert.match(source, /startMs <= cursorMs/);
+    assert.match(source, /cursorMs < endMs/);
+    assert.match(source, /Analysis unavailable for this point\./);
+    assert.match(source, /Analysis not available for this interval\./);
+    assert.match(source, /analysis_version=/);
     assert.match(source, /sampleAtOrBefore\("ecg"/);
     assert.match(source, /sampleAtOrBefore\("ppg"/);
     assert.match(source, /sampleAtOrBefore\("gsr"/);

@@ -154,6 +154,42 @@
         </article>
       </section>
 
+      <section id="analysis-panel" class="panel analysis-panel" aria-labelledby="analysis-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Engineering observations</p>
+            <h2 id="analysis-heading">Deterministic analysis</h2>
+          </div>
+          <span id="analysis-context" class="analysis-context">Live window</span>
+        </div>
+        <p id="analysis-empty" class="analysis-empty">Analysis unavailable for this point.</p>
+        <div id="analysis-content" class="analysis-content" hidden>
+          <div class="analysis-headline-grid">
+            <div>
+              <dt>Observed pattern</dt>
+              <dd id="analysis-pattern">—</dd>
+            </div>
+            <div>
+              <dt>Evidence tier</dt>
+              <dd id="analysis-evidence">—</dd>
+            </div>
+            <div>
+              <dt>Window</dt>
+              <dd id="analysis-window" class="mono">—</dd>
+            </div>
+          </div>
+          <dl class="analysis-details">
+            <div><dt>Supporting signals</dt><dd id="analysis-supporting-signals">—</dd></div>
+            <div><dt>Feature summary</dt><dd id="analysis-feature-summary">—</dd></div>
+            <div><dt>Quality</dt><dd id="analysis-quality-summary">—</dd></div>
+          </dl>
+          <div class="analysis-rules">
+            <h3>Deterministic rule observations</h3>
+            <ul id="analysis-rule-list"></ul>
+          </div>
+        </div>
+      </section>
+
       <section class="signals-section" aria-labelledby="signals-heading">
         <div class="section-heading-row">
           <div>

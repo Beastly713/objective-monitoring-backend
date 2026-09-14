@@ -7,6 +7,7 @@
   const REPLAY_CHUNK_MS = 30_000;
   const REPLAY_VIEWPORT_MS = 30_000;
   const MAX_REPLAY_CACHE_CHUNKS = 3;
+  const ANALYSIS_VERSION = "analysis-1.0";
 
   const state = {
     mode: "live",
@@ -23,6 +24,8 @@
     currentEpochId: null,
     lastLiveBootId: null,
     lastLiveSequence: null,
+    liveAnalysisResult: null,
+    lastAnalysisWindowEndMs: null,
     previousRateSample: null,
     errorSource: null,
     review: {
@@ -37,6 +40,7 @@
       previousAnimationNow: null,
       animationFrame: null,
       cache: new Map(),
+      analysisCache: new Map(),
     },
   };
 
@@ -77,6 +81,89 @@
     const element = byId(id);
     element.textContent = text;
     setTone(element, tone);
+  }
+
+  function analysisFeatureValue(result, modality, feature, unit) {
+    const value = result?.modality_results?.[modality]?.features?.[feature];
+    if (!Number.isFinite(value)) return "unavailable";
+    return `${formatNumber(value)}${unit ? ` ${unit}` : ""}`;
+  }
+
+  function renderAnalysisResult(result, options = {}) {
+    const empty = byId("analysis-empty");
+    const content = byId("analysis-content");
+    if (!result || typeof result !== "object") {
+      empty.textContent = options.emptyMessage ?? "Analysis unavailable for this point.";
+      empty.hidden = false;
+      content.hidden = true;
+      return;
+    }
+
+    const multimodal = result.multimodal_result ?? {};
+    const window = result.window ?? {};
+    const envelope = options.envelope;
+    const replayStart = Number(envelope?.replay_start_ms);
+    const replayEnd = Number(envelope?.replay_end_ms);
+    const windowLabel = Number.isFinite(replayStart) && Number.isFinite(replayEnd)
+      ? `T+${formatReplayTime(replayStart)} – T+${formatReplayTime(replayEnd)} · epoch ${shortId(result.epoch_id)}`
+      : `${formatReplayTime(Number(window.start_ms))} – ${formatReplayTime(Number(window.end_ms))} · epoch-relative`;
+    const supporting = Array.isArray(multimodal.supporting_modalities)
+      ? multimodal.supporting_modalities.map((modality) => String(modality).toUpperCase()).join(" · ")
+      : "";
+    const qualities = ["ecg", "ppg", "gsr", "imu", "temperature"].map((modality) => {
+      const quality = result.modality_results?.[modality]?.quality?.state ?? "unavailable";
+      return { modality, quality };
+    });
+    const featureSummary = [
+      `ECG HR ${analysisFeatureValue(result, "ecg", "heart_rate_bpm", "bpm")}`,
+      `PPG pulse ${analysisFeatureValue(result, "ppg", "pulse_rate_bpm", "bpm")}`,
+      `GSR raw mean ${analysisFeatureValue(result, "gsr", "gsr_raw_mean", "counts")}`,
+      `IMU motion ${analysisFeatureValue(result, "imu", "motion_index_g", "g")}`,
+      `Temperature ${analysisFeatureValue(result, "temperature", "temperature_mean_c", "°C")}`,
+    ].join(" · ");
+    const ruleIds = [
+      ...(Array.isArray(result.rules_triggered) ? result.rules_triggered : []),
+      ...(Array.isArray(multimodal.rule_ids) ? multimodal.rule_ids : []),
+    ].filter((ruleId, index, values) => values.indexOf(ruleId) === index);
+
+    setText("analysis-context", options.mode === "review" ? "Historical analysis" : "Live analysis");
+    setText("analysis-pattern", multimodal.pattern ?? "No pattern recorded");
+    setText("analysis-evidence", multimodal.evidence_tier ?? "insufficient");
+    setText("analysis-window", windowLabel);
+    setText("analysis-supporting-signals", supporting || "None recorded");
+    setText(
+      "analysis-feature-summary",
+      `${featureSummary} · Baseline reference ${result.baseline_ready === true ? "ready" : "building or incomplete"}`,
+    );
+    const qualitySummary = byId("analysis-quality-summary");
+    qualitySummary.replaceChildren();
+    for (const { modality, quality } of qualities) {
+      const chip = document.createElement("span");
+      chip.className = `analysis-quality-chip quality-${quality}`;
+      chip.textContent = `${modality.toUpperCase()} ${quality}`;
+      qualitySummary.appendChild(chip);
+    }
+    const ruleList = byId("analysis-rule-list");
+    ruleList.replaceChildren();
+    if (ruleIds.length === 0) {
+      const item = document.createElement("li");
+      item.textContent = "No deterministic rule observations for this window.";
+      ruleList.appendChild(item);
+    } else {
+      for (const ruleId of ruleIds) {
+        const item = document.createElement("li");
+        item.textContent = String(ruleId);
+        ruleList.appendChild(item);
+      }
+    }
+    empty.hidden = true;
+    content.hidden = false;
+  }
+
+  function clearLiveAnalysis(clearPanel = state.mode === "live") {
+    state.liveAnalysisResult = null;
+    state.lastAnalysisWindowEndMs = null;
+    if (clearPanel) renderAnalysisResult(null);
   }
 
   function showError(message, source) {
@@ -199,6 +286,7 @@
     state.currentEpochId = null;
     state.lastLiveBootId = null;
     state.lastLiveSequence = null;
+    clearLiveAnalysis(true);
     setText("epoch-state", "Waiting for data");
     resetSignalReadings();
   }
@@ -264,12 +352,14 @@
       epochChanged = true;
       const previousEpoch = state.currentEpochId;
       Object.values(charts).forEach(clearChart);
+      clearLiveAnalysis();
       state.currentEpochId = packet.epoch_id;
       state.lastLiveSequence = null;
       boundaryLabel = bootChanged ? "Device reboot" : "Time/backend epoch";
       setText("epoch-state", `${boundaryLabel} · ${shortId(previousEpoch)} → ${shortId(packet.epoch_id)}`);
     } else if (bootChanged) {
       Object.values(charts).forEach(clearChart);
+      clearLiveAnalysis();
       state.lastLiveSequence = null;
       boundaryLabel = "Device reboot";
       setText("epoch-state", `${boundaryLabel} · boot ${shortId(packet.boot_id)}`);
@@ -352,6 +442,21 @@
       appendPoints(charts.temperature, sampleTimes(base, raw.temp), [temperatures]);
       setText("temperature-reading", `${temperatures[temperatures.length - 1].toFixed(2)} °C`);
     }
+  }
+
+  function handleLiveAnalysisUpdate(result) {
+    if (
+      state.mode !== "live" ||
+      !result ||
+      result.session_id !== state.activeSessionId ||
+      result.epoch_id !== state.currentEpochId
+    ) return;
+    const windowEndMs = Number(result.window?.end_ms);
+    if (!Number.isFinite(windowEndMs)) return;
+    if (state.lastAnalysisWindowEndMs !== null && windowEndMs <= state.lastAnalysisWindowEndMs) return;
+    state.liveAnalysisResult = result;
+    state.lastAnalysisWindowEndMs = windowEndMs;
+    renderAnalysisResult(result, { mode: "live" });
   }
 
   function replayDuration() {
@@ -563,6 +668,121 @@
     return entry.promise;
   }
 
+  function analysisCacheKey(sessionId, fromMs, durationMs) {
+    return `${sessionId}|${ANALYSIS_VERSION}|${fromMs}|${durationMs}`;
+  }
+
+  function evictAnalysisCache() {
+    while (state.review.analysisCache.size >= MAX_REPLAY_CACHE_CHUNKS) {
+      const oldestKey = state.review.analysisCache.keys().next().value;
+      if (oldestKey === undefined) return false;
+      state.review.analysisCache.delete(oldestKey);
+    }
+    return true;
+  }
+
+  function fetchHistoricalAnalysis(sessionId, fromMs, durationMs, generation = state.review.selectionGeneration) {
+    const key = analysisCacheKey(sessionId, fromMs, durationMs);
+    const existing = state.review.analysisCache.get(key);
+    if (existing !== undefined) return existing.promise;
+    if (!evictAnalysisCache()) return Promise.resolve(null);
+
+    const entry = {
+      key,
+      fromMs,
+      durationMs,
+      status: "loading",
+      results: [],
+      capped: false,
+      promise: null,
+    };
+    state.review.analysisCache.set(key, entry);
+    entry.promise = requestJson(
+      `/api/objective/sessions/${encodeURIComponent(sessionId)}/analysis?from_ms=${fromMs}&duration_ms=${durationMs}&analysis_version=${encodeURIComponent(ANALYSIS_VERSION)}`,
+    ).then((response) => {
+      if (
+        generation !== state.review.selectionGeneration ||
+        state.mode !== "review" ||
+        state.review.analysisCache.get(key) !== entry
+      ) return null;
+      entry.status = "ready";
+      entry.results = Array.isArray(response.results) ? response.results : [];
+      entry.capped = response.window?.capped === true;
+      renderHistoricalAnalysisAtCursor(state.review.inspectionPositionMs ?? state.review.replayPositionMs);
+      return entry;
+    }).catch((error) => {
+      if (
+        generation !== state.review.selectionGeneration ||
+        state.mode !== "review" ||
+        state.review.analysisCache.get(key) !== entry
+      ) return null;
+      entry.status = "error";
+      entry.error = error;
+      renderHistoricalAnalysisAtCursor(state.review.inspectionPositionMs ?? state.review.replayPositionMs);
+      throw error;
+    });
+    return entry.promise;
+  }
+
+  function ensureHistoricalAnalysis(viewport, requiredIndices, generation) {
+    const sessionId = state.review.sessionId;
+    if (!sessionId) return;
+    const duration = replayDuration();
+    const requests = [];
+    for (const index of requiredIndices) {
+      const fromMs = index * REPLAY_CHUNK_MS;
+      const durationMs = Math.min(REPLAY_CHUNK_MS, duration - fromMs);
+      if (durationMs <= 0) continue;
+      requests.push(fetchHistoricalAnalysis(sessionId, fromMs, durationMs, generation));
+    }
+    if (requests.length > 0) void Promise.allSettled(requests);
+    renderHistoricalAnalysisAtCursor(state.review.inspectionPositionMs ?? state.review.replayPositionMs);
+  }
+
+  function cachedHistoricalAnalysisAtCursor(cursorMs) {
+    const matches = [];
+    for (const entry of state.review.analysisCache.values()) {
+      if (entry.status !== "ready") continue;
+      for (const envelope of entry.results) {
+        const startMs = Number(envelope.replay_start_ms);
+        const endMs = Number(envelope.replay_end_ms);
+        if (
+          Number.isFinite(startMs) &&
+          Number.isFinite(endMs) &&
+          startMs <= cursorMs &&
+          cursorMs < endMs
+        ) {
+          matches.push({ envelope, startMs, endMs });
+        }
+      }
+    }
+    matches.sort((left, right) => left.startMs - right.startMs || left.endMs - right.endMs);
+    return matches.at(-1) ?? null;
+  }
+
+  function renderHistoricalAnalysisAtCursor(replayPositionMs) {
+    if (state.mode !== "review") return;
+    if (replayPositionMs > state.review.replayPositionMs) {
+      renderAnalysisResult(null, {
+        emptyMessage: "Replay has not presented analysis at this cursor position yet.",
+      });
+      return;
+    }
+    const selected = cachedHistoricalAnalysisAtCursor(replayPositionMs);
+    if (selected?.envelope?.result) {
+      renderAnalysisResult(selected.envelope.result, {
+        mode: "review",
+        envelope: selected.envelope,
+      });
+      return;
+    }
+
+    const loading = Array.from(state.review.analysisCache.values()).some((entry) => entry.status === "loading");
+    renderAnalysisResult(null, {
+      emptyMessage: loading ? "Loading historical analysis…" : "Analysis not available for this interval.",
+    });
+  }
+
   function cachedReplayPackets(viewport) {
     const deduplicated = new Map();
     for (const entry of state.review.cache.values()) {
@@ -743,6 +963,7 @@
     state.review.inspectionPositionMs = Math.max(0, Math.min(replayDuration(), position));
     updateReplayTime();
     updateInspectionReadings();
+    renderHistoricalAnalysisAtCursor(state.review.inspectionPositionMs);
   }
 
   function renderHistoricalPackets(viewport) {
@@ -845,6 +1066,7 @@
     const requiredIndices = requiredReplayChunkIndices(viewport);
     const generation = state.review.selectionGeneration;
     const requiredSet = new Set(requiredIndices);
+    ensureHistoricalAnalysis(viewport, requiredIndices, generation);
     const missingIndices = requiredIndices.filter((index) => !state.review.cache.has(index));
     const loadingEntries = requiredIndices
       .map((index) => state.review.cache.get(index))
@@ -936,6 +1158,7 @@
     state.review.replaySpeed = 1;
     state.review.inspectionPositionMs = null;
     state.review.cache.clear();
+    state.review.analysisCache.clear();
     byId("replay-speed").value = "1";
     byId("replay-seek").max = "0";
     setReplayControlsEnabled(false);
@@ -1072,6 +1295,7 @@
       state.review.inspectionPositionMs = null;
       state.review.focusSignal = "all";
       state.review.cache.clear();
+      state.review.analysisCache.clear();
       setReplayWarning("");
       clearError("replay");
       clearSignalState();
@@ -1096,6 +1320,7 @@
     const webSocket = state.liveSocket;
     state.liveSocket = null;
     state.socketSessionId = null;
+    if (state.mode === "live") clearLiveAnalysis();
     if (webSocket !== null) webSocket.close();
     updateLiveBadge("Live socket idle", "neutral");
   }
@@ -1129,6 +1354,8 @@
           updateLiveBadge("Live socket ready", "good");
         } else if (message.type === "packet") {
           processAcceptedPacket(message.packet);
+        } else if (message.type === "analysis_update") {
+          handleLiveAnalysisUpdate(message.result);
         }
       } catch {
         showError("The live stream sent an unreadable message.", "live");
@@ -1141,6 +1368,7 @@
       if (state.liveSocket !== webSocket) return;
       state.liveSocket = null;
       state.socketSessionId = null;
+      clearLiveAnalysis();
       updateLiveBadge("Live socket disconnected", "warn");
       if (state.mode === "live" && state.activeSessionId === sessionId && state.reconnectTimer === null) {
         state.reconnectTimer = window.setTimeout(() => {
@@ -1178,6 +1406,7 @@
     const nextSessionId = session?.session_id ?? null;
     if (nextSessionId !== state.activeSessionId) {
       closeLiveSocket();
+      clearLiveAnalysis();
       if (state.mode === "live") clearSignalState();
       state.activeSessionId = nextSessionId;
     }
