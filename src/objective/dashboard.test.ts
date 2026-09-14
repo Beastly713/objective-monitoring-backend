@@ -78,10 +78,10 @@ test("dashboard routes serve only the fixed local clinician assets", async () =>
     assert.match(source, /plotT0Ms \+ sample\[0\] \/ 1_000/);
     assert.match(source, /sample\[1\] \/ 16_384/);
     assert.match(source, /sample\[1\] \* 0\.0078125/);
-    assert.match(source, /buffer\.data\[column\]\.push\(null\)/);
     assert.match(source, /packet\.epoch_id !== state\.currentEpochId/);
-    assert.match(source, /currentSequence > state\.lastLiveSequence \+ 1/);
-    assert.match(source, /Live delivery gap before seq/);
+    assert.doesNotMatch(source, /markDiscontinuity/);
+    assert.doesNotMatch(source, /Live delivery gap before seq/);
+    assert.doesNotMatch(source, /currentSequence > state\.lastLiveSequence \+ 1/);
     assert.match(source, /state\.mode !== "live"/);
     assert.match(source, /\/replay`/);
     assert.match(source, /\/replay\/packets\?from_ms=/);

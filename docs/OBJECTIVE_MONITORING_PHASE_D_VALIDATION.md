@@ -1,17 +1,20 @@
 # Objective Monitoring — Phase D Validation
 
-Validated on 2026-09-14 against the completed objective-analysis pipeline. This document records the available real-stream evidence and the software checks required by the analysis specification. All outputs below are engineering observations and feature/quality states, not diagnoses or clinical conclusions.
+Validated on 2026-09-14 against the `analysis-2.0` objective-analysis pipeline. This document records the available real-stream evidence and the software checks required by the analysis specification. All outputs below are engineering observations and feature/quality states, not diagnoses or clinical conclusions.
 
 ## Real logged sensor-stream replay
 
-No ESP32 or USB serial device was attached during this validation run, so no new live hardware session or live WebSocket acquisition was claimed. An existing persisted real ESP32 five-sensor recording was replayed through the repository's actual `AcceptedPacketBus` and `ObjectiveAnalysisPipeline`; no synthetic samples were generated.
+No ESP32 or USB serial device was attached during this validation run, so no new live hardware session or live WebSocket acquisition was claimed. The existing persisted real ESP32 five-sensor recording was replayed through the repository's actual `AcceptedPacketBus` and `ObjectiveAnalysisPipeline`; no synthetic samples were generated.
 
 Source session `59dfe47d-674f-4a92-906a-697e8f048796`, device `ESP32-0C2202BF138`:
 
 - 1,055 persisted packets, one epoch, and one persisted sequence gap.
 - 26,375 ECG, 10,580 PPG, 13,503 GSR, 10,550 IMU, and 211 temperature samples expanded onto the canonical ESP timestamp domain.
-- 96 complete 10-second analysis windows on the one-second grid, covering replay time 0–105 seconds. The first and last windows retained their absolute sample timestamps.
-- Paced delivery produced zero analysis queue drops, zero processing failures, and an empty queue before session stop.
+- The new scheduler produced 10 complete non-overlapping 10-second windows (`0–10` through `90–100` seconds), not the former 96 overlapping windows on a one-second grid.
+- Session stop drained all completed window work before final synthesis. The real stream ended at `105,598.897 ms`, so final synthesis recorded the incomplete `100,000–105,598.897 ms` tail (`5,598.897 ms`) and no missing windows.
+- The paced replay produced zero analysis queue drops, zero processing failures, and an empty queue before stop. Final runtime analysis state was `complete`.
+
+The rounded 10-window/5-second-tail contract is also covered by the automated window-engine and stop/finalization tests. The packet callback now performs bounded raw collection and metadata tracking; expansion, feature extraction, quality evaluation, baseline updates, rules, and multimodal evaluation run once per completed window in the serialized analysis worker.
 
 Observed pipeline behavior for this recording:
 
@@ -24,11 +27,11 @@ Observed pipeline behavior for this recording:
 - Deterministic rule output included `MM-07`; it is preserved as an engineering pattern identifier only.
 - Requesting session stop after the queue drained left zero queued packets and no processing failures. The stopped session state was released as specified.
 
-This replay validates raw sample expansion, canonical timestamps, epoch/window coordinates, gap propagation, feature calculation, quality classification, baseline state, rule evaluation, serialized processing, and stop/drain behavior against real logged data. It does not establish live hardware timing or sensor-specific physical calibration.
+This replay validates raw sample expansion, canonical timestamps, epoch coordinates, gap propagation, feature calculation, quality classification, baseline state, rule evaluation, final synthesis ordering, and sensor-specific engineering observations against real logged data. As before, it does not establish live hardware timing or sensor-specific physical calibration; asynchronous database persistence and API behavior are covered by the automated tests.
 
 ## Automated validation
 
-The repository objective suite passed: **65 tests, 0 failures**. Coverage includes conversions, timestamp/window boundaries, gaps and out-of-order samples, ECG/PPG detector state, GSR/IMU/temperature features, quality precedence, baseline readiness, modality and multimodal rules, rule persistence/reset, queue ordering/drops, epoch transitions, session stop/drain, asynchronous persistence and idempotency, live `analysis_update`, bounded historical retrieval, REVIEW synchronization, and analysis failure isolation.
+The repository objective suite passed: **69 tests, 0 failures**. Coverage includes conversions, timestamp/window boundaries, non-overlapping 10-second windows and incomplete tails, gaps and out-of-order samples, ECG/PPG detector state, GSR/IMU/temperature features, quality precedence, baseline readiness, modality and multimodal rules, rule persistence/reset, completed-window queue ordering/drops, epoch transitions, session stop/final synthesis ordering, asynchronous window/final-analysis persistence and idempotency, live `analysis_update`, bounded historical retrieval, REVIEW synchronization, and analysis failure isolation.
 
 Also passed:
 
@@ -36,7 +39,7 @@ Also passed:
 - `node --check public/objective/objective.js`
 - `git diff --check`
 
-The automated integration tests cover live delivery, persistence, historical retrieval, and dashboard behavior using deterministic fixtures. No implementation defect was found, so no production code or specified algorithm was changed during this validation commit.
+The automated integration tests cover live delivery, persistence, historical retrieval, final-analysis API state, and dashboard behavior using deterministic fixtures. The conversion, feature, quality, baseline, and rule algorithms remain unchanged; the production changes are limited to completed-window scheduling, final synthesis/persistence, status/API/UI integration, and the associated version contract.
 
 ## Physical validation still unavailable
 

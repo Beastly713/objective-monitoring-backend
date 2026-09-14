@@ -4,6 +4,7 @@ import type { DeviceGateway } from "./deviceGateway.js";
 import type { ObjectiveDeviceRegistry } from "./deviceRegistry.js";
 import type { ObjectiveAnalysisPipeline } from "./analysis/pipeline.js";
 import type { ObjectiveAnalysisResultStore } from "./analysisResultStore.js";
+import type { ObjectiveSessionAnalysisStore } from "./sessionAnalysisStore.js";
 import type { LiveGateway } from "./live/liveGateway.js";
 import type { ObjectivePacketStore } from "./persistence/packetStore.js";
 import type { ObjectiveSessionManager } from "./sessionManager.js";
@@ -17,6 +18,7 @@ export interface ObjectiveStatusRouteDependencies {
   packetStore: ObjectivePacketStore;
   analysisPipeline?: ObjectiveAnalysisPipeline;
   analysisResultStore?: ObjectiveAnalysisResultStore;
+  sessionAnalysisStore?: ObjectiveSessionAnalysisStore;
 }
 
 export function handleObjectiveStatusRequest(
@@ -38,12 +40,25 @@ export function handleObjectiveStatusRequest(
     packetProcessingFailures: 0,
     queueDepth: 0,
     queueDrops: 0,
-    lastWindow: { session_id: null, epoch_id: null, end_ms: null },
+    pendingAnalysisWindows: 0,
+    lastAnalysisQueueWaitMs: null,
+    lastAnalysisDurationMs: null,
+    lastWindow: { session_id: null, epoch_id: null, start_ms: null, end_ms: null },
     baseline: { collection_complete: false, ready_modalities: [] },
+    finalAnalysis: { session_id: null, state: "unavailable", available: false },
     pipelineHealthy: true,
     degraded: false,
   };
   const analysisStorage = dependencies.analysisResultStore?.getSnapshot() ?? {
+    queueDepth: 0,
+    persistedResults: 0,
+    storageErrors: 0,
+    storageDrops: 0,
+    suppressedDuplicates: 0,
+    storageHealthy: true,
+    degraded: false,
+  };
+  const finalAnalysisStorage = dependencies.sessionAnalysisStore?.getSnapshot() ?? {
     queueDepth: 0,
     persistedResults: 0,
     storageErrors: 0,
@@ -95,14 +110,28 @@ export function handleObjectiveStatusRequest(
       packet_processing_failures: analysisPipeline.packetProcessingFailures,
       queue_depth: analysisPipeline.queueDepth,
       queue_drops: analysisPipeline.queueDrops,
+      completed_windows_emitted: analysisPipeline.windowsEmitted,
+      pending_analysis_windows: analysisPipeline.pendingAnalysisWindows,
+      analysis_queue_depth: analysisPipeline.queueDepth,
+      analysis_queue_drops: analysisPipeline.queueDrops,
+      last_analysis_queue_wait_ms: analysisPipeline.lastAnalysisQueueWaitMs,
+      last_analysis_duration_ms: analysisPipeline.lastAnalysisDurationMs,
       storage_queue_depth: analysisStorage.queueDepth,
       storage_errors: analysisStorage.storageErrors,
       storage_drops: analysisStorage.storageDrops,
       last_window: analysisPipeline.lastWindow,
+      final_analysis: {
+        ...analysisPipeline.finalAnalysis,
+        persisted_results: finalAnalysisStorage.persistedResults,
+        persistence_queue_depth: finalAnalysisStorage.queueDepth,
+        persistence_errors: finalAnalysisStorage.storageErrors,
+        persistence_drops: finalAnalysisStorage.storageDrops,
+        persistence_healthy: finalAnalysisStorage.storageHealthy,
+      },
       baseline: analysisPipeline.baseline,
       pipeline_healthy: analysisPipeline.pipelineHealthy,
-      storage_healthy: analysisStorage.storageHealthy,
-      degraded: analysisPipeline.degraded || analysisStorage.degraded,
+      storage_healthy: analysisStorage.storageHealthy && finalAnalysisStorage.storageHealthy,
+      degraded: analysisPipeline.degraded || analysisStorage.degraded || finalAnalysisStorage.degraded,
     },
   })}\n`);
   return true;

@@ -125,13 +125,25 @@ export interface AnalysisWindowSamples {
   temperature: AnalysisTempSample[];
 }
 
+/**
+ * Detector context is deliberately separate from the reported window samples.
+ * Context can help a stateful detector cross a window boundary, but it must
+ * never affect sample counts or feature aggregates for the completed window.
+ */
+export interface AnalysisWindowContextSamples {
+  ecg: AnalysisEcgSample[];
+  ppg: AnalysisPpgSample[];
+}
+
 export interface AnalysisWindow {
   sessionId: string;
   epochId: string;
   espAnchorUs: number;
   window: AnalysisWindowRef;
   samples: AnalysisWindowSamples;
+  context_samples?: AnalysisWindowContextSamples;
   metadata: AnalysisWindowMetadata;
+  completed_at_ms?: number;
 }
 
 export interface ModalityQuality {
@@ -325,6 +337,7 @@ export interface AnalysisSourceTrace {
   last_packet_seq: number | null;
   packet_count: number;
   packet_gap_count: number;
+  sample_gap_count?: number;
   truncated_packet_count: number;
   modalities_present: AnalysisModality[];
   discarded_out_of_order_samples: number;
@@ -346,6 +359,10 @@ export interface AnalysisResult {
   source: AnalysisSourceTrace;
   baseline_ready: boolean;
   baseline: BaselineSummary;
+  baseline_update?: {
+    eligible_modalities: AnalysisModality[];
+    baseline_after: BaselineSummary;
+  };
   modality_results: ModalityResults;
   multimodal_result: MultimodalAnalysisResult;
   rules_triggered: string[];

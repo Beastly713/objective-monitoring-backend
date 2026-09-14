@@ -3,6 +3,7 @@ import { Pool, type PoolConfig } from "pg";
 export const REQUIRED_OBJECTIVE_MIGRATIONS = [
   "001_objective_persistence.sql",
   "002_objective_analysis.sql",
+  "003_objective_session_analysis.sql",
 ] as const;
 export const REQUIRED_OBJECTIVE_MIGRATION = REQUIRED_OBJECTIVE_MIGRATIONS[0];
 
@@ -53,6 +54,9 @@ export async function verifyObjectivePersistenceSchema(pool: Pool): Promise<void
       "objective_analysis_results",
       "objective_analysis_results_pkey",
       "objective_analysis_results_session_epoch_window",
+      "objective_session_analysis",
+      "objective_session_analysis_pkey",
+      "objective_session_analysis_session_created",
     ]],
   );
   const missingRelations = relations.rows
@@ -81,6 +85,11 @@ export async function verifyObjectivePersistenceSchema(pool: Pool): Promise<void
        analysis_version, conversion_version, feature_version, rule_version,
        created_at_ms, result
      FROM objective_analysis_results
+     LIMIT 0`,
+  );
+  await pool.query(
+    `SELECT session_id, analysis_version, created_at_ms, result
+     FROM objective_session_analysis
      LIMIT 0`,
   );
 }

@@ -1,6 +1,7 @@
 import type { AcceptedObjectivePacket } from "../acceptedPacketBus.js";
 import { expandAcceptedPacket } from "./converters.js";
 import type {
+  AnyAnalysisSample,
   AnalysisEcgSample,
   AnalysisGsrSample,
   AnalysisImuSample,
@@ -9,17 +10,20 @@ import type {
   AnalysisPpgSample,
   AnalysisTempSample,
   AnalysisWindow,
+  AnalysisWindowContextSamples,
   AnalysisWindowMetadata,
   AnalysisWindowSamples,
   DiscardedOutOfOrderSample,
+  ExpandedAnalysisSamples,
   PacketGapEvent,
   PacketMetadata,
   SampleGapEvent,
 } from "./types.js";
 
 export const WINDOW_DURATION_MS = 10_000;
-export const WINDOW_STEP_MS = 1_000;
+export const WINDOW_STEP_MS = 10_000;
 export const SAMPLE_RETENTION_MS = 15_000;
+export const DETECTOR_CONTEXT_MS = 2_000;
 
 export const LARGE_GAP_MS: Record<AnalysisModality, number> = {
   ecg: 12,
@@ -34,9 +38,8 @@ export interface TimedSample {
 }
 
 /**
- * A small monotonic array with a head index. The analysis workload is short
- * lived and bounded, so a direct structure is easier to inspect than a ring
- * buffer while retaining bounded memory after pruning.
+ * A small monotonic array with a head index. This remains useful to callers
+ * outside the collector and keeps the existing bounded-buffer contract.
  */
 export class SampleBuffer<T extends TimedSample> {
   private items: T[] = [];
@@ -97,21 +100,54 @@ interface PendingInputGap {
   event: AnalysisInputGapEvent;
 }
 
-type BufferMap = {
-  ecg: SampleBuffer<AnalysisEcgSample>;
-  ppg: SampleBuffer<AnalysisPpgSample>;
-  gsr: SampleBuffer<AnalysisGsrSample>;
-  imu: SampleBuffer<AnalysisImuSample>;
-  temperature: SampleBuffer<AnalysisTempSample>;
-};
+type AcceptedSampleIndexes = Record<AnalysisModality, number[]>;
 
-function emptyBuffers(): BufferMap {
+interface BufferedPacket {
+  packet: AcceptedObjectivePacket;
+  metadata: PacketMetadata;
+  acceptedSampleIndexes: AcceptedSampleIndexes;
+  expanded: ExpandedAnalysisSamples | null;
+}
+
+/**
+ * A completed window boundary with the raw packet references needed to
+ * materialize its samples later. Collection can therefore remain lightweight;
+ * expansion happens only when the serialized analysis worker takes the item.
+ */
+export interface CompletedAnalysisWindow {
+  sessionId: string;
+  epochId: string;
+  espAnchorUs: number;
+  window: AnalysisWindow["window"];
+  metadata: AnalysisWindowMetadata;
+  completed_at_ms: number;
+  materialize(): AnalysisWindow;
+}
+
+export interface IncompleteAnalysisTail {
+  session_id: string;
+  epoch_id: string;
+  start_ms: number;
+  end_ms: number;
+  duration_ms: number;
+}
+
+export interface AnalysisEpochCoverage {
+  session_id: string;
+  epoch_id: string;
+  first_sample_ms: number | null;
+  latest_sample_ms: number | null;
+}
+
+const MODALITIES: AnalysisModality[] = ["ecg", "ppg", "gsr", "imu", "temperature"];
+
+function emptyAcceptedSampleIndexes(): AcceptedSampleIndexes {
   return {
-    ecg: new SampleBuffer<AnalysisEcgSample>(),
-    ppg: new SampleBuffer<AnalysisPpgSample>(),
-    gsr: new SampleBuffer<AnalysisGsrSample>(),
-    imu: new SampleBuffer<AnalysisImuSample>(),
-    temperature: new SampleBuffer<AnalysisTempSample>(),
+    ecg: [],
+    ppg: [],
+    gsr: [],
+    imu: [],
+    temperature: [],
   };
 }
 
@@ -132,8 +168,23 @@ function intersects(startMs: number, endMs: number, otherStartMs: number, otherE
   return endMs > otherStartMs && startMs < otherEndMs;
 }
 
-function key(sessionId: string, epochId: string): string {
-  return JSON.stringify([sessionId, epochId]);
+function rawSamples(packet: AcceptedObjectivePacket, modality: AnalysisModality): readonly (readonly number[])[] {
+  switch (modality) {
+    case "ecg":
+      return packet.raw_packet.ecg;
+    case "ppg":
+      return packet.raw_packet.ppg;
+    case "gsr":
+      return packet.raw_packet.gsr;
+    case "imu":
+      return packet.raw_packet.imu;
+    case "temperature":
+      return packet.raw_packet.temp;
+  }
+}
+
+function rawSampleTimeMs(packet: AcceptedObjectivePacket, sample: readonly number[]): number {
+  return packet.plot_t0_ms + sample[0] / 1_000;
 }
 
 export class AnalysisWindowEngine {
@@ -142,9 +193,17 @@ export class AnalysisWindowEngine {
   private espAnchorUs: number | null = null;
   private nextWindowEndMs = WINDOW_DURATION_MS;
   private latestSampleMs = -Infinity;
+  private firstSampleMs = Infinity;
+  private latestPacketReceivedAtMs: number | null = null;
   private previousPacket: PacketMetadata | null = null;
-  private buffers = emptyBuffers();
-  private packetMetadata: PacketMetadata[] = [];
+  private bufferedPackets: BufferedPacket[] = [];
+  private lastSampleTimeByModality: Record<AnalysisModality, number | null> = {
+    ecg: null,
+    ppg: null,
+    gsr: null,
+    imu: null,
+    temperature: null,
+  };
   private packetGapEvents: PacketGapEvent[] = [];
   private sampleGapEvents: SampleGapEvent[] = [];
   private analysisInputGapEvents: AnalysisInputGapEvent[] = [];
@@ -152,6 +211,10 @@ export class AnalysisWindowEngine {
   private readonly pendingInputGaps: PendingInputGap[] = [];
 
   ingestPacket(packet: AcceptedObjectivePacket): AnalysisWindow[] {
+    return this.collectPacket(packet).map((window) => window.materialize());
+  }
+
+  collectPacket(packet: AcceptedObjectivePacket): CompletedAnalysisWindow[] {
     this.ensureEpoch(packet);
 
     const metadata = packetMetadata(packet);
@@ -166,25 +229,26 @@ export class AnalysisWindowEngine {
         endMs: Math.max(startMs, metadata.start_ms),
       });
     }
-    this.packetMetadata.push(metadata);
+
+    const acceptedSampleIndexes = this.collectSampleMetadata(packet);
+    this.bufferedPackets.push({
+      packet,
+      metadata,
+      acceptedSampleIndexes,
+      expanded: null,
+    });
     this.previousPacket = metadata;
+    this.latestPacketReceivedAtMs = packet.received_at_ms;
 
-    const expanded = expandAcceptedPacket(packet);
-    this.appendSamples("ecg", expanded.ecg);
-    this.appendSamples("ppg", expanded.ppg);
-    this.appendSamples("gsr", expanded.gsr);
-    this.appendSamples("imu", expanded.imu);
-    this.appendSamples("temperature", expanded.temperature);
-
-    const windows: AnalysisWindow[] = [];
+    const windows: CompletedAnalysisWindow[] = [];
     while (this.latestSampleMs >= this.nextWindowEndMs) {
       const endMs = this.nextWindowEndMs;
       const startMs = endMs - WINDOW_DURATION_MS;
-      windows.push(this.createWindow(startMs, endMs));
+      windows.push(this.createWindowDescriptor(startMs, endMs));
       this.nextWindowEndMs += WINDOW_STEP_MS;
     }
 
-    this.pruneMetadata();
+    this.pruneRawRetention();
     return windows;
   }
 
@@ -206,9 +270,17 @@ export class AnalysisWindowEngine {
     this.espAnchorUs = null;
     this.nextWindowEndMs = WINDOW_DURATION_MS;
     this.latestSampleMs = -Infinity;
+    this.firstSampleMs = Infinity;
+    this.latestPacketReceivedAtMs = null;
     this.previousPacket = null;
-    this.buffers = emptyBuffers();
-    this.packetMetadata = [];
+    this.bufferedPackets = [];
+    this.lastSampleTimeByModality = {
+      ecg: null,
+      ppg: null,
+      gsr: null,
+      imu: null,
+      temperature: null,
+    };
     this.packetGapEvents = [];
     this.sampleGapEvents = [];
     this.analysisInputGapEvents = [];
@@ -223,88 +295,215 @@ export class AnalysisWindowEngine {
     return this.nextWindowEndMs;
   }
 
+  getIncompleteTail(): IncompleteAnalysisTail | null {
+    if (this.sessionId === null || this.epochId === null || !Number.isFinite(this.latestSampleMs)) {
+      return null;
+    }
+    const startMs = this.nextWindowEndMs - WINDOW_DURATION_MS;
+    const durationMs = Math.max(0, this.latestSampleMs - startMs);
+    if (durationMs <= 0) {
+      return null;
+    }
+    return {
+      session_id: this.sessionId,
+      epoch_id: this.epochId,
+      start_ms: startMs,
+      end_ms: this.latestSampleMs,
+      duration_ms: durationMs,
+    };
+  }
+
+  getEpochCoverage(): AnalysisEpochCoverage | null {
+    if (this.sessionId === null || this.epochId === null) {
+      return null;
+    }
+    return {
+      session_id: this.sessionId,
+      epoch_id: this.epochId,
+      first_sample_ms: Number.isFinite(this.firstSampleMs) ? this.firstSampleMs : null,
+      latest_sample_ms: Number.isFinite(this.latestSampleMs) ? this.latestSampleMs : null,
+    };
+  }
+
   private ensureEpoch(packet: AcceptedObjectivePacket): void {
     const isNewEpoch =
       this.sessionId !== packet.session_id ||
       this.epochId !== packet.epoch_id ||
       (this.espAnchorUs !== null && this.espAnchorUs !== packet.esp_anchor_us);
-    if (isNewEpoch) {
-      this.reset();
-      this.sessionId = packet.session_id;
-      this.epochId = packet.epoch_id;
-      this.espAnchorUs = packet.esp_anchor_us;
-      for (let index = this.pendingInputGaps.length - 1; index >= 0; index -= 1) {
-        const pending = this.pendingInputGaps[index];
-        if (pending.sessionId === packet.session_id && pending.epochId === packet.epoch_id) {
-          this.analysisInputGapEvents.unshift(pending.event);
-          this.pendingInputGaps.splice(index, 1);
-        }
+    if (!isNewEpoch) {
+      return;
+    }
+
+    this.reset();
+    this.sessionId = packet.session_id;
+    this.epochId = packet.epoch_id;
+    this.espAnchorUs = packet.esp_anchor_us;
+    for (let index = this.pendingInputGaps.length - 1; index >= 0; index -= 1) {
+      const pending = this.pendingInputGaps[index];
+      if (pending.sessionId === packet.session_id && pending.epochId === packet.epoch_id) {
+        this.analysisInputGapEvents.unshift(pending.event);
+        this.pendingInputGaps.splice(index, 1);
       }
     }
   }
 
-  private appendSamples<T extends TimedSample>(
-    modality: AnalysisModality,
-    samples: readonly T[],
-  ): void {
-    const buffer = this.buffers[modality] as unknown as SampleBuffer<T>;
-    const lastTimeMs = buffer.latestTimeMs();
-    for (const sample of samples) {
-      if (lastTimeMs !== null && sample.sampleTimeMs < lastTimeMs) {
-        this.discardedOutOfOrderSamples.push({ modality, sampleTimeMs: sample.sampleTimeMs });
-        continue;
-      }
-
-      const currentLastTimeMs = buffer.latestTimeMs();
-      if (currentLastTimeMs !== null) {
-        const gapMs = sample.sampleTimeMs - currentLastTimeMs;
-        if (gapMs > LARGE_GAP_MS[modality]) {
-          this.sampleGapEvents.push({
-            modality,
-            startMs: currentLastTimeMs,
-            endMs: sample.sampleTimeMs,
-            gapMs,
-          });
+  private collectSampleMetadata(packet: AcceptedObjectivePacket): AcceptedSampleIndexes {
+    const accepted = emptyAcceptedSampleIndexes();
+    for (const modality of MODALITIES) {
+      const samples = rawSamples(packet, modality);
+      let lastTimeMs = this.lastSampleTimeByModality[modality];
+      for (let index = 0; index < samples.length; index += 1) {
+        const sampleTimeMs = rawSampleTimeMs(packet, samples[index]);
+        if (lastTimeMs !== null && sampleTimeMs < lastTimeMs) {
+          this.discardedOutOfOrderSamples.push({ modality, sampleTimeMs });
+          continue;
         }
-      }
 
-      if (buffer.append(sample)) {
-        this.latestSampleMs = Math.max(this.latestSampleMs, sample.sampleTimeMs);
-      } else {
-        this.discardedOutOfOrderSamples.push({ modality, sampleTimeMs: sample.sampleTimeMs });
+        if (lastTimeMs !== null) {
+          const gapMs = sampleTimeMs - lastTimeMs;
+          if (gapMs > LARGE_GAP_MS[modality]) {
+            this.sampleGapEvents.push({
+              modality,
+              startMs: lastTimeMs,
+              endMs: sampleTimeMs,
+              gapMs,
+            });
+          }
+        }
+
+        accepted[modality].push(index);
+        lastTimeMs = sampleTimeMs;
+        this.latestSampleMs = Math.max(this.latestSampleMs, sampleTimeMs);
+        this.firstSampleMs = Math.min(this.firstSampleMs, sampleTimeMs);
       }
+      this.lastSampleTimeByModality[modality] = lastTimeMs;
     }
+    return accepted;
   }
 
-  private createWindow(startMs: number, endMs: number): AnalysisWindow {
-    const window: AnalysisWindow = {
-      sessionId: this.sessionId!,
-      epochId: this.epochId!,
-      espAnchorUs: this.espAnchorUs!,
+  private createWindowDescriptor(startMs: number, endMs: number): CompletedAnalysisWindow {
+    const metadata = this.windowMetadata(startMs, endMs);
+    const bufferedPackets = this.bufferedPackets.filter((buffered) =>
+      intersects(
+        buffered.metadata.start_ms,
+        buffered.metadata.end_ms,
+        startMs - DETECTOR_CONTEXT_MS,
+        endMs,
+      )
+    );
+    const sessionId = this.sessionId!;
+    const epochId = this.epochId!;
+    const espAnchorUs = this.espAnchorUs!;
+    const completedAtMs = this.latestPacketReceivedAtMs ?? Date.now();
+    let materialized: AnalysisWindow | null = null;
+    return {
+      sessionId,
+      epochId,
+      espAnchorUs,
       window: {
-        start_us: this.espAnchorUs! + startMs * 1_000,
-        end_us: this.espAnchorUs! + endMs * 1_000,
+        start_us: espAnchorUs + startMs * 1_000,
+        end_us: espAnchorUs + endMs * 1_000,
         start_ms: startMs,
         end_ms: endMs,
         duration_ms: 10_000,
       },
-      samples: {
-        ecg: [...this.buffers.ecg.range(startMs, endMs)],
-        ppg: [...this.buffers.ppg.range(startMs, endMs)],
-        gsr: [...this.buffers.gsr.range(startMs, endMs)],
-        imu: [...this.buffers.imu.range(startMs, endMs)],
-        temperature: [...this.buffers.temperature.range(startMs, endMs)],
-      } satisfies AnalysisWindowSamples,
-      metadata: this.windowMetadata(startMs, endMs),
+      metadata,
+      completed_at_ms: completedAtMs,
+      materialize: () => {
+        materialized ??= this.materializeWindow(
+          sessionId,
+          epochId,
+          espAnchorUs,
+          startMs,
+          endMs,
+          metadata,
+          completedAtMs,
+          bufferedPackets,
+        );
+        return materialized;
+      },
     };
-    return window;
+  }
+
+  private materializeWindow(
+    sessionId: string,
+    epochId: string,
+    espAnchorUs: number,
+    startMs: number,
+    endMs: number,
+    metadata: AnalysisWindowMetadata,
+    completedAtMs: number,
+    bufferedPackets: readonly BufferedPacket[],
+  ): AnalysisWindow {
+    const samples = {
+      ecg: this.samplesFor("ecg", startMs, endMs, bufferedPackets),
+      ppg: this.samplesFor("ppg", startMs, endMs, bufferedPackets),
+      gsr: this.samplesFor("gsr", startMs, endMs, bufferedPackets),
+      imu: this.samplesFor("imu", startMs, endMs, bufferedPackets),
+      temperature: this.samplesFor("temperature", startMs, endMs, bufferedPackets),
+    } satisfies AnalysisWindowSamples;
+    const context_samples: AnalysisWindowContextSamples = {
+      ecg: this.samplesFor("ecg", startMs - DETECTOR_CONTEXT_MS, startMs, bufferedPackets),
+      ppg: this.samplesFor("ppg", startMs - DETECTOR_CONTEXT_MS, startMs, bufferedPackets),
+    };
+
+    return {
+      sessionId,
+      epochId,
+      espAnchorUs,
+      window: {
+        start_us: espAnchorUs + startMs * 1_000,
+        end_us: espAnchorUs + endMs * 1_000,
+        start_ms: startMs,
+        end_ms: endMs,
+        duration_ms: 10_000,
+      },
+      samples,
+      context_samples,
+      metadata,
+      completed_at_ms: completedAtMs,
+    };
+  }
+
+  private samplesFor(modality: "ecg", startMs: number, endMs: number, bufferedPackets?: readonly BufferedPacket[]): AnalysisEcgSample[];
+  private samplesFor(modality: "ppg", startMs: number, endMs: number, bufferedPackets?: readonly BufferedPacket[]): AnalysisPpgSample[];
+  private samplesFor(modality: "gsr", startMs: number, endMs: number, bufferedPackets?: readonly BufferedPacket[]): AnalysisGsrSample[];
+  private samplesFor(modality: "imu", startMs: number, endMs: number, bufferedPackets?: readonly BufferedPacket[]): AnalysisImuSample[];
+  private samplesFor(modality: "temperature", startMs: number, endMs: number, bufferedPackets?: readonly BufferedPacket[]): AnalysisTempSample[];
+  private samplesFor(modality: AnalysisModality, startMs: number, endMs: number, bufferedPackets?: readonly BufferedPacket[]): AnyAnalysisSample[];
+  private samplesFor(
+    modality: AnalysisModality,
+    startMs: number,
+    endMs: number,
+    bufferedPackets = this.bufferedPackets,
+  ): AnyAnalysisSample[] {
+    const values: AnyAnalysisSample[] = [];
+    for (const buffered of bufferedPackets) {
+      if (!intersects(buffered.metadata.start_ms, buffered.metadata.end_ms, startMs, endMs)) {
+        continue;
+      }
+      const expanded = buffered.expanded ?? expandAcceptedPacket(buffered.packet);
+      buffered.expanded = expanded;
+      const acceptedIndexes = new Set(buffered.acceptedSampleIndexes[modality]);
+      for (let index = 0; index < expanded[modality].length; index += 1) {
+        const sample = expanded[modality][index];
+        if (
+          acceptedIndexes.has(index) &&
+          sample.sampleTimeMs >= startMs &&
+          sample.sampleTimeMs < endMs
+        ) {
+          values.push(sample);
+        }
+      }
+    }
+    return values;
   }
 
   private windowMetadata(startMs: number, endMs: number): AnalysisWindowMetadata {
     return {
-      packetMetadata: this.packetMetadata
-        .filter((packet) => intersects(packet.start_ms, packet.end_ms, startMs, endMs))
-        .map((packet) => ({ ...packet })),
+      packetMetadata: this.bufferedPackets
+        .filter((buffered) => intersects(buffered.metadata.start_ms, buffered.metadata.end_ms, startMs, endMs))
+        .map((buffered) => ({ ...buffered.metadata })),
       packetGapEvents: this.packetGapEvents
         .filter((event) => intersects(event.startMs, event.endMs, startMs, endMs))
         .map((event) => ({ ...event })),
@@ -320,17 +519,12 @@ export class AnalysisWindowEngine {
     };
   }
 
-  private pruneMetadata(): void {
+  private pruneRawRetention(): void {
     if (!Number.isFinite(this.latestSampleMs)) {
       return;
     }
     const cutoffMs = this.latestSampleMs - SAMPLE_RETENTION_MS;
-    this.buffers.ecg.pruneBefore(cutoffMs);
-    this.buffers.ppg.pruneBefore(cutoffMs);
-    this.buffers.gsr.pruneBefore(cutoffMs);
-    this.buffers.imu.pruneBefore(cutoffMs);
-    this.buffers.temperature.pruneBefore(cutoffMs);
-    this.packetMetadata = this.packetMetadata.filter((packet) => packet.end_ms >= cutoffMs);
+    this.bufferedPackets = this.bufferedPackets.filter((buffered) => buffered.metadata.end_ms >= cutoffMs);
     this.packetGapEvents = this.packetGapEvents.filter((event) => event.endMs >= cutoffMs);
     this.sampleGapEvents = this.sampleGapEvents.filter((event) => event.endMs >= cutoffMs);
     this.analysisInputGapEvents = this.analysisInputGapEvents.filter((event) => event.endMs >= cutoffMs);

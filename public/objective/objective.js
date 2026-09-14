@@ -7,7 +7,7 @@
   const REPLAY_CHUNK_MS = 30_000;
   const REPLAY_VIEWPORT_MS = 30_000;
   const MAX_REPLAY_CACHE_CHUNKS = 3;
-  const ANALYSIS_VERSION = "analysis-1.0";
+  const ANALYSIS_VERSION = "analysis-2.0";
 
   const state = {
     mode: "live",
@@ -23,9 +23,11 @@
     historySessions: [],
     currentEpochId: null,
     lastLiveBootId: null,
-    lastLiveSequence: null,
     liveAnalysisResult: null,
     lastAnalysisWindowEndMs: null,
+    finalAnalysisSessionId: null,
+    finalAnalysisLoadedSessionId: null,
+    finalAnalysisFetchPending: false,
     previousRateSample: null,
     errorSource: null,
     review: {
@@ -126,7 +128,15 @@
       ...(Array.isArray(multimodal.rule_ids) ? multimodal.rule_ids : []),
     ].filter((ruleId, index, values) => values.indexOf(ruleId) === index);
 
-    setText("analysis-context", options.mode === "review" ? "Historical analysis" : "Live analysis");
+    const completedWindowNumber = Number.isFinite(Number(window.end_ms))
+      ? Math.max(1, Math.round(Number(window.end_ms) / 10_000))
+      : null;
+    setText(
+      "analysis-context",
+      options.mode === "review"
+        ? "Historical completed window"
+        : completedWindowNumber === null ? "Live analysis" : `Completed W${completedWindowNumber}`,
+    );
     setText("analysis-pattern", multimodal.pattern ?? "No pattern recorded");
     setText("analysis-evidence", multimodal.evidence_tier ?? "insufficient");
     setText("analysis-window", windowLabel);
@@ -164,6 +174,44 @@
     state.liveAnalysisResult = null;
     state.lastAnalysisWindowEndMs = null;
     if (clearPanel) renderAnalysisResult(null);
+  }
+
+  function renderFinalAnalysisState(finalAnalysis, sessionId = state.finalAnalysisSessionId) {
+    const stateText = finalAnalysis?.state ?? "unavailable";
+    const result = finalAnalysis?.result;
+    setText("final-analysis-state", sessionId ? `${stateText} · ${shortId(sessionId)}` : stateText);
+    if (stateText === "complete" && result?.session) {
+      const completed = Number(result.session.completed_window_count);
+      const tail = result.session.incomplete_tail_present === true
+        ? ` · incomplete tail ${formatReplayTime(Number(result.session.incomplete_tail_duration_ms))}`
+        : "";
+      setText("analysis-final-summary", `Final session synthesis ready · ${formatNumber(completed)} completed windows${tail}.`);
+    } else if (stateText === "pending") {
+      setText("analysis-final-summary", "Finalizing session analysis… completed windows are being drained.");
+    } else if (stateText === "error") {
+      setText("analysis-final-summary", "Final session synthesis reported an analysis error.");
+    } else {
+      setText("analysis-final-summary", "Final session synthesis is unavailable until the completed windows are drained.");
+    }
+  }
+
+  async function refreshFinalAnalysis(sessionId) {
+    if (!sessionId || state.finalAnalysisFetchPending) return;
+    state.finalAnalysisFetchPending = true;
+    renderFinalAnalysisState({ state: "pending" }, sessionId);
+    try {
+      const response = await requestJson(`/api/objective/sessions/${encodeURIComponent(sessionId)}/final-analysis`);
+      if (state.finalAnalysisSessionId !== sessionId && state.activeSessionId !== null) return;
+      state.finalAnalysisSessionId = sessionId;
+      state.finalAnalysisLoadedSessionId = response.final_analysis?.available === true ? sessionId : null;
+      renderFinalAnalysisState(response.final_analysis, sessionId);
+    } catch {
+      if (state.finalAnalysisSessionId === sessionId || state.activeSessionId === null) {
+        renderFinalAnalysisState({ state: "unavailable" }, sessionId);
+      }
+    } finally {
+      state.finalAnalysisFetchPending = false;
+    }
   }
 
   function showError(message, source) {
@@ -233,7 +281,7 @@
     const signalName = elementId.replace("-chart", "");
     const data = Array.from({ length: series.length + 1 }, () => []);
     const plot = new uPlot(chartOptions(element, series), data, element);
-    const buffer = { data, plot, element, windowMs, maxPoints, breakPending: false };
+    const buffer = { data, plot, element, windowMs, maxPoints };
 
     const observer = new ResizeObserver(() => {
       const width = Math.floor(element.clientWidth);
@@ -267,7 +315,6 @@
 
   function clearChart(buffer) {
     for (const values of buffer.data) values.length = 0;
-    buffer.breakPending = false;
     buffer.plot.setData(buffer.data);
   }
 
@@ -285,33 +332,14 @@
     Object.values(charts).forEach(clearChart);
     state.currentEpochId = null;
     state.lastLiveBootId = null;
-    state.lastLiveSequence = null;
     clearLiveAnalysis(true);
     setText("epoch-state", "Waiting for data");
     resetSignalReadings();
   }
 
-  function markDiscontinuity() {
-    Object.values(charts).forEach((buffer) => { buffer.breakPending = true; });
-  }
-
   function appendPoints(buffer, times, valueColumns) {
     if (times.length === 0) return;
     const xValues = buffer.data[0];
-
-    if (buffer.breakPending && xValues.length > 0) {
-      const previousX = xValues[xValues.length - 1];
-      const nextX = times[0];
-      if (nextX > previousX) {
-        xValues.push(previousX + (nextX - previousX) / 2);
-        for (let column = 1; column < buffer.data.length; column += 1) {
-          buffer.data[column].push(null);
-        }
-      } else {
-        for (const values of buffer.data) values.length = 0;
-      }
-    }
-    buffer.breakPending = false;
 
     xValues.push(...times);
     for (let column = 0; column < valueColumns.length; column += 1) {
@@ -354,43 +382,16 @@
       Object.values(charts).forEach(clearChart);
       clearLiveAnalysis();
       state.currentEpochId = packet.epoch_id;
-      state.lastLiveSequence = null;
       boundaryLabel = bootChanged ? "Device reboot" : "Time/backend epoch";
       setText("epoch-state", `${boundaryLabel} · ${shortId(previousEpoch)} → ${shortId(packet.epoch_id)}`);
     } else if (bootChanged) {
       Object.values(charts).forEach(clearChart);
       clearLiveAnalysis();
-      state.lastLiveSequence = null;
       boundaryLabel = "Device reboot";
       setText("epoch-state", `${boundaryLabel} · boot ${shortId(packet.boot_id)}`);
     }
 
-    const backendGap = packet.gap_before > 0 || packet.sequence_status === "gap";
-    const currentSequence = packet.raw_packet.seq;
-    const liveDeliveryGap =
-      !backendGap &&
-      !epochChanged &&
-      !bootChanged &&
-      state.lastLiveBootId === packet.boot_id &&
-      Number.isInteger(state.lastLiveSequence) &&
-      Number.isInteger(currentSequence) &&
-      currentSequence > state.lastLiveSequence + 1;
-
-    if (backendGap) {
-      markDiscontinuity();
-      setText(
-        "epoch-state",
-        boundaryLabel !== null
-          ? `${boundaryLabel} · ingestion gap before seq ${packet.raw_packet.seq}`
-          : `Gap before seq ${packet.raw_packet.seq} · epoch ${shortId(packet.epoch_id)}`,
-      );
-    } else if (liveDeliveryGap) {
-      markDiscontinuity();
-      setText("epoch-state", `Live delivery gap before seq ${currentSequence}`);
-    }
-
     state.lastLiveBootId = packet.boot_id;
-    state.lastLiveSequence = currentSequence;
 
     const raw = packet.raw_packet;
     const base = packet.plot_t0_ms;
@@ -457,6 +458,7 @@
     state.liveAnalysisResult = result;
     state.lastAnalysisWindowEndMs = windowEndMs;
     renderAnalysisResult(result, { mode: "live" });
+    setText("analysis-window-state", `W${Math.max(1, Math.round(windowEndMs / 10_000))} complete`);
   }
 
   function replayDuration() {
@@ -1405,10 +1407,20 @@
     const session = status.session;
     const nextSessionId = session?.session_id ?? null;
     if (nextSessionId !== state.activeSessionId) {
+      const previousSessionId = state.activeSessionId;
       closeLiveSocket();
       clearLiveAnalysis();
       if (state.mode === "live") clearSignalState();
       state.activeSessionId = nextSessionId;
+      if (nextSessionId === null && previousSessionId !== null) {
+        state.finalAnalysisSessionId = previousSessionId;
+        state.finalAnalysisLoadedSessionId = null;
+        void refreshFinalAnalysis(previousSessionId);
+      } else if (nextSessionId !== null) {
+        state.finalAnalysisSessionId = nextSessionId;
+        state.finalAnalysisLoadedSessionId = null;
+        renderFinalAnalysisState({ state: "unavailable" }, nextSessionId);
+      }
     }
 
     if (session === null) {
@@ -1456,6 +1468,37 @@
       "storage-errors",
       `${formatNumber(status.storage.storage_errors)} / ${formatNumber(status.storage.storage_drops)}`,
     );
+    const analysis = status.analysis ?? {};
+    const lastWindow = analysis.last_window ?? {};
+    const lastWindowEnd = Number(lastWindow.end_ms);
+    if (Number.isFinite(lastWindowEnd)) {
+      setText("analysis-window-state", `W${Math.max(1, Math.round(lastWindowEnd / 10_000))} complete`);
+    } else if (session !== null) {
+      setText("analysis-window-state", "Collecting W1");
+    } else {
+      setText("analysis-window-state", "No active analysis");
+    }
+    setText(
+      "analysis-queue",
+      `${formatNumber(analysis.pending_analysis_windows ?? analysis.queue_depth)} pending · ${formatNumber(analysis.analysis_queue_drops ?? analysis.queue_drops)} drops`,
+    );
+    if (
+      analysis.final_analysis?.session_id &&
+      (state.activeSessionId === null || analysis.final_analysis.session_id === state.activeSessionId)
+    ) {
+      state.finalAnalysisSessionId = analysis.final_analysis.session_id;
+      renderFinalAnalysisState(analysis.final_analysis, state.finalAnalysisSessionId);
+      if (
+        analysis.final_analysis.state === "complete" &&
+        state.activeSessionId === null &&
+        state.finalAnalysisLoadedSessionId !== state.finalAnalysisSessionId &&
+        !state.finalAnalysisFetchPending
+      ) {
+        void refreshFinalAnalysis(state.finalAnalysisSessionId);
+      }
+    } else if (session !== null) {
+      renderFinalAnalysisState({ state: "unavailable" }, session.session_id);
+    }
     updatePacketRate(status);
 
     byId("start-button").disabled =

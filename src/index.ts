@@ -19,6 +19,7 @@ import {
 } from "./objective/persistence/database.js";
 import { ObjectivePacketStore } from "./objective/persistence/packetStore.js";
 import { ObjectiveAnalysisResultStore } from "./objective/analysisResultStore.js";
+import { ObjectiveSessionAnalysisStore } from "./objective/sessionAnalysisStore.js";
 import { ObjectiveSessionRepository } from "./objective/persistence/sessionRepository.js";
 import { SequenceTracker } from "./objective/sequenceTracker.js";
 import { ObjectiveSessionManager } from "./objective/sessionManager.js";
@@ -80,6 +81,10 @@ async function startBackend(): Promise<void> {
     const liveGateway = createObjectiveLiveGateway(acceptedPacketBus, analysisResultBus);
     const analysisPipeline = new ObjectiveAnalysisPipeline(acceptedPacketBus, analysisResultBus);
     const analysisResultStore = new ObjectiveAnalysisResultStore(analysisResultBus, pool);
+    const sessionAnalysisStore = new ObjectiveSessionAnalysisStore(
+      analysisPipeline.finalAnalysisBus,
+      pool,
+    );
     const deviceGateway = createObjectiveDeviceGateway({
       credential: { deviceId, token: deviceToken },
       deviceRegistry,
@@ -100,6 +105,7 @@ async function startBackend(): Promise<void> {
           packetStore,
           analysisPipeline,
           analysisResultStore,
+          sessionAnalysisStore,
         })
       ) {
         return;
@@ -113,6 +119,8 @@ async function startBackend(): Promise<void> {
           return handleObjectiveAnalysisRequest(request, response, {
             sessionRepository,
             analysisHistoryRepository,
+            sessionAnalysisStore,
+            analysisPipeline,
           });
         })
         .then((handled) => {

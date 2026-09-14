@@ -7,6 +7,8 @@ import {
   MAX_REPLAY_DURATION_MS,
 } from "./history/historyRepository.js";
 import type { ObjectiveAnalysisHistoryRepository } from "./history/analysisHistoryRepository.js";
+import type { ObjectiveAnalysisPipeline } from "./analysis/pipeline.js";
+import type { ObjectiveSessionAnalysisStore } from "./sessionAnalysisStore.js";
 
 function sendJson(response: ServerResponse, statusCode: number, body: unknown): void {
   response.writeHead(statusCode, { "content-type": "application/json; charset=utf-8" });
@@ -48,6 +50,8 @@ function logPersistenceFailure(error: unknown): void {
 export interface ObjectiveAnalysisRouteDependencies {
   sessionRepository: Pick<ObjectiveSessionRepository, "getSession">;
   analysisHistoryRepository: Pick<ObjectiveAnalysisHistoryRepository, "getAnalysisWindow">;
+  sessionAnalysisStore?: Pick<ObjectiveSessionAnalysisStore, "getFinalAnalysis">;
+  analysisPipeline?: Pick<ObjectiveAnalysisPipeline, "getFinalAnalysisState">;
 }
 
 export async function handleObjectiveAnalysisRequest(
@@ -60,6 +64,65 @@ export async function handleObjectiveAnalysisRequest(
   }
 
   const url = new URL(request.url ?? "/", "http://localhost");
+
+  const finalMatch = /^\/api\/objective\/sessions\/([^/]+)\/final-analysis$/.exec(url.pathname);
+  if (finalMatch !== null) {
+    let sessionId: string;
+    try {
+      sessionId = decodeURIComponent(finalMatch[1]);
+    } catch {
+      sendJson(response, 400, { error: "invalid session id" });
+      return true;
+    }
+
+    try {
+      const session = await dependencies.sessionRepository.getSession(sessionId);
+      if (session === undefined) {
+        sendJson(response, 404, { error: "objective session not found" });
+        return true;
+      }
+
+      const result = dependencies.sessionAnalysisStore === undefined
+        ? undefined
+        : await dependencies.sessionAnalysisStore.getFinalAnalysis(sessionId, ANALYSIS_VERSION);
+      if (result !== undefined) {
+        sendJson(response, 200, {
+          session,
+          final_analysis: {
+            state: "complete",
+            available: true,
+            analysis_version: ANALYSIS_VERSION,
+            result,
+          },
+        });
+        return true;
+      }
+
+      const runtimeState = dependencies.analysisPipeline?.getFinalAnalysisState(sessionId);
+      // Synthesis publication is in-memory and final persistence is
+      // asynchronous. Until the row can be read back, the API remains
+      // pending even if the runtime has finished synthesizing.
+      const state = runtimeState === "error"
+        ? "error"
+        : runtimeState === "pending" || runtimeState === "complete"
+          ? "pending"
+          : session.status === "COMPLETED" ? "unavailable" : "pending";
+      sendJson(response, 200, {
+        session,
+        final_analysis: {
+          state,
+          available: false,
+          analysis_version: ANALYSIS_VERSION,
+          result: null,
+        },
+      });
+    } catch (error) {
+      logPersistenceFailure(error);
+      sendJson(response, 503, { error: "objective persistence unavailable" });
+    }
+    return true;
+  }
+
   const match = /^\/api\/objective\/sessions\/([^/]+)\/analysis$/.exec(url.pathname);
   if (match === null) {
     return false;
