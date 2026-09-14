@@ -3,3 +3,4 @@ dist/
 .env
 *.log
 firmware/secrets.h
+firmware/esp32_v5_3_backend_session/secrets.h
