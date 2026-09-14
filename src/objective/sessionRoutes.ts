@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import type { ObjectiveDeviceRegistry } from "./deviceRegistry.js";
+import type { ObjectiveAnalysisPipeline } from "./analysis/pipeline.js";
 import type { ObjectiveSessionRepository } from "./persistence/sessionRepository.js";
 import {
   ActiveObjectiveSessionConflictError,
@@ -46,6 +47,7 @@ export interface ObjectiveSessionRouteDependencies {
   sessionManager: ObjectiveSessionManager;
   sessionRepository: ObjectiveSessionRepository;
   deviceRegistry: ObjectiveDeviceRegistry;
+  analysisPipeline?: ObjectiveAnalysisPipeline;
 }
 
 function sendSession(response: ServerResponse, session: ObjectiveSession, statusCode = 200): void {
@@ -169,6 +171,10 @@ export async function handleObjectiveSessionRequest(
         sendJson(response, 503, { error: "objective persistence unavailable" });
       }
       return true;
+    }
+
+    if (result.changed) {
+      dependencies.analysisPipeline?.requestSessionStop(sessionId);
     }
 
     if (result.changed && dependencies.deviceRegistry.isConnected(result.session.device_id)) {

@@ -1,6 +1,8 @@
 import { createServer } from "node:http";
 
 import { AcceptedPacketBus } from "./objective/acceptedPacketBus.js";
+import { ObjectiveAnalysisPipeline } from "./objective/analysis/pipeline.js";
+import { AnalysisResultBus } from "./objective/analysis/resultBus.js";
 import { handleObjectiveDashboardRequest } from "./objective/dashboard/dashboardRoutes.js";
 import { createObjectiveDeviceGateway, OBJECTIVE_DEVICE_PATH } from "./objective/deviceGateway.js";
 import { ObjectiveDeviceRegistry } from "./objective/deviceRegistry.js";
@@ -14,6 +16,7 @@ import {
   verifyObjectivePersistenceSchema,
 } from "./objective/persistence/database.js";
 import { ObjectivePacketStore } from "./objective/persistence/packetStore.js";
+import { ObjectiveAnalysisResultStore } from "./objective/analysisResultStore.js";
 import { ObjectiveSessionRepository } from "./objective/persistence/sessionRepository.js";
 import { SequenceTracker } from "./objective/sequenceTracker.js";
 import { ObjectiveSessionManager } from "./objective/sessionManager.js";
@@ -70,7 +73,10 @@ async function startBackend(): Promise<void> {
     const deviceRegistry = new ObjectiveDeviceRegistry();
     const acceptedPacketBus = new AcceptedPacketBus();
     const packetStore = new ObjectivePacketStore(acceptedPacketBus, pool);
-    const liveGateway = createObjectiveLiveGateway(acceptedPacketBus);
+    const analysisResultBus = new AnalysisResultBus();
+    const liveGateway = createObjectiveLiveGateway(acceptedPacketBus, analysisResultBus);
+    const analysisPipeline = new ObjectiveAnalysisPipeline(acceptedPacketBus, analysisResultBus);
+    const analysisResultStore = new ObjectiveAnalysisResultStore(analysisResultBus, pool);
     const deviceGateway = createObjectiveDeviceGateway({
       credential: { deviceId, token: deviceToken },
       deviceRegistry,
@@ -89,6 +95,8 @@ async function startBackend(): Promise<void> {
           sessionManager,
           liveGateway,
           packetStore,
+          analysisPipeline,
+          analysisResultStore,
         })
       ) {
         return;
@@ -112,6 +120,7 @@ async function startBackend(): Promise<void> {
             sessionManager,
             sessionRepository,
             deviceRegistry,
+            analysisPipeline,
           });
         })
         .then((handled) => {

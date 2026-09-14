@@ -136,6 +136,29 @@ export class BaselineState {
     };
   }
 
+  clone(): BaselineState {
+    const copy = new BaselineState();
+    copy.collectionComplete = this.collectionComplete;
+    copy.values.clear();
+    copy.states.clear();
+    for (const modality of ALL_MODALITIES) {
+      copy.values.set(modality, [...this.values.get(modality)!]);
+      copy.states.set(modality, cloneModalityState(this.states.get(modality)!));
+    }
+    return copy;
+  }
+
+  replaceWith(other: BaselineState): void {
+    const copy = other.clone();
+    this.collectionComplete = copy.collectionComplete;
+    this.values.clear();
+    this.states.clear();
+    for (const modality of ALL_MODALITIES) {
+      this.values.set(modality, [...copy.values.get(modality)!]);
+      this.states.set(modality, cloneModalityState(copy.states.get(modality)!));
+    }
+  }
+
   reset(): void {
     this.collectionComplete = false;
     this.values.clear();

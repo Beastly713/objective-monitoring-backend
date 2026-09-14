@@ -2,6 +2,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import type { DeviceGateway } from "./deviceGateway.js";
 import type { ObjectiveDeviceRegistry } from "./deviceRegistry.js";
+import type { ObjectiveAnalysisPipeline } from "./analysis/pipeline.js";
+import type { ObjectiveAnalysisResultStore } from "./analysisResultStore.js";
 import type { LiveGateway } from "./live/liveGateway.js";
 import type { ObjectivePacketStore } from "./persistence/packetStore.js";
 import type { ObjectiveSessionManager } from "./sessionManager.js";
@@ -13,6 +15,8 @@ export interface ObjectiveStatusRouteDependencies {
   sessionManager: ObjectiveSessionManager;
   liveGateway: LiveGateway;
   packetStore: ObjectivePacketStore;
+  analysisPipeline?: ObjectiveAnalysisPipeline;
+  analysisResultStore?: ObjectiveAnalysisResultStore;
 }
 
 export function handleObjectiveStatusRequest(
@@ -28,6 +32,26 @@ export function handleObjectiveStatusRequest(
   const device = dependencies.deviceGateway.getSnapshot();
   const live = dependencies.liveGateway.getSnapshot();
   const storage = dependencies.packetStore.getSnapshot();
+  const analysisPipeline = dependencies.analysisPipeline?.getSnapshot() ?? {
+    windowsEmitted: 0,
+    windowsFailed: 0,
+    packetProcessingFailures: 0,
+    queueDepth: 0,
+    queueDrops: 0,
+    lastWindow: { session_id: null, epoch_id: null, end_ms: null },
+    baseline: { collection_complete: false, ready_modalities: [] },
+    pipelineHealthy: true,
+    degraded: false,
+  };
+  const analysisStorage = dependencies.analysisResultStore?.getSnapshot() ?? {
+    queueDepth: 0,
+    persistedResults: 0,
+    storageErrors: 0,
+    storageDrops: 0,
+    suppressedDuplicates: 0,
+    storageHealthy: true,
+    degraded: false,
+  };
   const session = dependencies.sessionManager.getActiveSessionForDevice(
     dependencies.configuredDeviceId,
   );
@@ -64,6 +88,21 @@ export function handleObjectiveStatusRequest(
       suppressed_duplicates: storage.suppressedDuplicates,
       healthy: storage.storageHealthy,
       degraded: storage.degraded,
+    },
+    analysis: {
+      windows_emitted: analysisPipeline.windowsEmitted,
+      windows_failed: analysisPipeline.windowsFailed,
+      packet_processing_failures: analysisPipeline.packetProcessingFailures,
+      queue_depth: analysisPipeline.queueDepth,
+      queue_drops: analysisPipeline.queueDrops,
+      storage_queue_depth: analysisStorage.queueDepth,
+      storage_errors: analysisStorage.storageErrors,
+      storage_drops: analysisStorage.storageDrops,
+      last_window: analysisPipeline.lastWindow,
+      baseline: analysisPipeline.baseline,
+      pipeline_healthy: analysisPipeline.pipelineHealthy,
+      storage_healthy: analysisStorage.storageHealthy,
+      degraded: analysisPipeline.degraded || analysisStorage.degraded,
     },
   })}\n`);
   return true;

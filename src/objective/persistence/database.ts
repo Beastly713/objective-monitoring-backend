@@ -1,6 +1,10 @@
 import { Pool, type PoolConfig } from "pg";
 
-export const REQUIRED_OBJECTIVE_MIGRATION = "001_objective_persistence.sql";
+export const REQUIRED_OBJECTIVE_MIGRATIONS = [
+  "001_objective_persistence.sql",
+  "002_objective_analysis.sql",
+] as const;
+export const REQUIRED_OBJECTIVE_MIGRATION = REQUIRED_OBJECTIVE_MIGRATIONS[0];
 
 export function readDatabaseUrl(environment: NodeJS.ProcessEnv = process.env): string {
   const value = environment.DATABASE_URL;
@@ -21,17 +25,19 @@ export function createDatabasePool(databaseUrl: string): Pool {
 export async function verifyObjectivePersistenceSchema(pool: Pool): Promise<void> {
   await pool.query("SELECT 1");
 
-  const migration = await pool.query<{ applied: boolean }>(
-    `SELECT EXISTS (
-       SELECT 1
-       FROM objective_schema_migrations
-       WHERE migration_name = $1
-     ) AS applied`,
-    [REQUIRED_OBJECTIVE_MIGRATION],
+  const migrations = await pool.query<{ migration_name: string }>(
+    `SELECT migration_name
+     FROM objective_schema_migrations
+     WHERE migration_name = ANY($1::text[])`,
+    [REQUIRED_OBJECTIVE_MIGRATIONS],
   );
-  if (migration.rows[0]?.applied !== true) {
+  const appliedMigrations = new Set(migrations.rows.map((row) => row.migration_name));
+  const missingMigrations = REQUIRED_OBJECTIVE_MIGRATIONS.filter(
+    (migrationName) => !appliedMigrations.has(migrationName),
+  );
+  if (missingMigrations.length > 0) {
     throw new Error(
-      `required database migration ${REQUIRED_OBJECTIVE_MIGRATION} is not applied; run npm run db:migrate`,
+      `required database migrations are not applied: ${missingMigrations.join(", ")}; run npm run db:migrate`,
     );
   }
 
@@ -44,6 +50,9 @@ export async function verifyObjectivePersistenceSchema(pool: Pool): Promise<void
       "objective_packets",
       "objective_packets_pkey",
       "objective_packets_session_received_order",
+      "objective_analysis_results",
+      "objective_analysis_results_pkey",
+      "objective_analysis_results_session_epoch_window",
     ]],
   );
   const missingRelations = relations.rows
@@ -64,6 +73,14 @@ export async function verifyObjectivePersistenceSchema(pool: Pool): Promise<void
        session_id, boot_id, seq, received_at_ms, sequence_status, gap_before,
        epoch_id, esp_anchor_us, backend_anchor_ms, plot_t0_ms, raw_packet
      FROM objective_packets
+     LIMIT 0`,
+  );
+  await pool.query(
+    `SELECT
+       session_id, boot_id, epoch_id, window_start_us, window_end_us,
+       analysis_version, conversion_version, feature_version, rule_version,
+       created_at_ms, result
+     FROM objective_analysis_results
      LIMIT 0`,
   );
 }
