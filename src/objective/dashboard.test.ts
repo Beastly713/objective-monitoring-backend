@@ -49,6 +49,23 @@ test("dashboard routes serve only the fixed local clinician assets", async () =>
       "analysis-feature-summary",
       "analysis-quality-summary",
       "analysis-rule-list",
+      "analysis-activity",
+      "analysis-collection-window",
+      "analysis-collection-progress",
+      "analysis-latest-completed",
+      "analysis-result-received",
+      "analysis-source-trace",
+      "analysis-modality-grid",
+      "analysis-fired-rules",
+      "recent-analysis-windows",
+      "final-analysis-content",
+      "final-session-coverage",
+      "final-session-quality",
+      "final-session-baseline",
+      "final-session-rules",
+      "final-session-multimodal",
+      "final-session-trends",
+      "final-session-observations",
     ]) {
       assert.match(html, new RegExp(`id="${controlId}"`));
     }
@@ -99,6 +116,24 @@ test("dashboard routes serve only the fixed local clinician assets", async () =>
     assert.match(source, /hooks: \{ setCursor: \[handleReviewCursor\] \}/);
     assert.match(source, /message\.type === "analysis_update"/);
     assert.match(source, /handleLiveAnalysisUpdate\(message\.result\)/);
+    assert.match(source, /MAX_LIVE_ANALYSIS_WINDOWS = 12/);
+    assert.match(source, /function renderAnalysisActivity\(status, session\)/);
+    assert.match(source, /delivered_analysis/);
+    assert.match(source, /source\.analysis_input_gap_count/);
+    assert.match(source, /function renderFinalAnalysisResult\(result\)/);
+    assert.match(source, /MAX_FINAL_ANALYSIS_CACHE = 8/);
+    assert.match(source, /FINAL_ANALYSIS_RETRY_LIMIT = 5/);
+    assert.match(source, /Final session synthesis ready/);
+    assert.match(source, /Finalizing session analysis… persistence pending/);
+    assert.match(source, /No persisted final synthesis is available/);
+    assert.match(source, /Final session synthesis could not be read/);
+    assert.match(source, /loading its detailed result/);
+    assert.match(source, /function renderReviewAnalysisWindows\(\)/);
+    assert.match(source, /refreshFinalAnalysis\(sessionId, \{ mode: "review", generation/);
+    assert.match(source, /finalAnalysisContextCurrent/);
+    assert.match(source, /state\.review\.sessionId === sessionId/);
+    assert.match(source, /context\.generation === state\.review\.selectionGeneration/);
+    assert.match(source, /state\.review\.selectedAnalysisKey/);
     assert.match(source, /function fetchHistoricalAnalysis\(sessionId, fromMs, durationMs/);
     assert.match(source, /function renderHistoricalAnalysisAtCursor\(replayPositionMs\)/);
     assert.match(source, /startMs <= cursorMs/);

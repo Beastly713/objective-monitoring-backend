@@ -1,6 +1,6 @@
 # Objective Monitoring — Phase D Validation
 
-Validated on 2026-09-14 against the `analysis-2.0` objective-analysis pipeline. This document records the available real-stream evidence and the software checks required by the analysis specification. All outputs below are engineering observations and feature/quality states, not diagnoses or clinical conclusions.
+Validated on 2026-09-15 against the `analysis-2.0` objective-analysis pipeline. This document records the available real-stream evidence and the software checks required by the analysis specification. All outputs below are engineering observations and feature/quality states, not diagnoses or clinical conclusions.
 
 ## Real logged sensor-stream replay
 
@@ -31,7 +31,7 @@ This replay validates raw sample expansion, canonical timestamps, epoch coordina
 
 ## Automated validation
 
-The repository objective suite passed: **69 tests, 0 failures**. Coverage includes conversions, timestamp/window boundaries, non-overlapping 10-second windows and incomplete tails, gaps and out-of-order samples, ECG/PPG detector state, GSR/IMU/temperature features, quality precedence, baseline readiness, modality and multimodal rules, rule persistence/reset, completed-window queue ordering/drops, epoch transitions, session stop/final synthesis ordering, asynchronous window/final-analysis persistence and idempotency, live `analysis_update`, bounded historical retrieval, REVIEW synchronization, and analysis failure isolation.
+The repository objective suite passed: **71 tests, 0 failures**. Coverage includes conversions, timestamp/window boundaries, non-overlapping 10-second windows and incomplete tails, gaps and out-of-order samples, ECG/PPG detector state, GSR/IMU/temperature features, quality precedence, baseline readiness, modality and multimodal rules, rule persistence/reset, completed-window queue ordering/drops, epoch transitions, session stop/final synthesis ordering, asynchronous window/final-analysis persistence and idempotency, live `analysis_update`, collection progress, delivery telemetry, bounded historical retrieval, REVIEW synchronization, and analysis failure isolation.
 
 Also passed:
 
@@ -54,3 +54,13 @@ The following require a connected and observed hardware run and were not re-run 
 - live physical persistence, historical REVIEW inspection after that live session, and live epoch-transition/failure-isolation observation.
 
 No SpO2, absolute ECG mV, or absolute legacy-TinyGSR µS result was introduced.
+
+## Observer-facing analysis flow
+
+LIVE mode now exposes the analysis lifecycle directly: the dashboard shows the currently collecting 10-second window and progress, the latest completed window, baseline readiness, worker queue/drop state, delivery counts, runtime/storage health, and the most recent sample time. Completed `analysis_update` results are retained as a bounded chronological list; selecting an older row changes only the detailed analysis panel and does not redraw the raw signal charts.
+
+The detailed window view includes the analysis version, window/epoch identity, explanation, supporting and contradicting evidence, source continuity, per-modality quality/features/baseline relations, and fired plus non-fired rule evaluations. After STOP, the final panel remains explicitly pending until persisted final synthesis is available. REVIEW mode loads the same final-analysis endpoint independently from replay packets and provides a bounded list of loaded historical analysis windows, with stale session responses ignored.
+
+## Replay coordinate invariant
+
+For a single epoch, raw and analysis history use the same session-relative canonical coordinate. Raw packet samples use `backend_anchor_ms + (packet_t0_us - esp_anchor_us) / 1000 - session_origin_ms`; completed analysis windows use `backend_anchor_ms + (window_start_us - esp_anchor_us) / 1000 - session_origin_ms` (and the corresponding end time). The window engine derives completed boundaries from that canonical timeline, so no clipping or coordinate-semantic change was introduced while adding the observer UI. Repository inspection and the existing replay/history tests did not reproduce a timestamp mismatch or establish a code defect; no speculative timestamp fix was made.

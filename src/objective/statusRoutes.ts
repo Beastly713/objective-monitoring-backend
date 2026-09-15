@@ -43,6 +43,7 @@ export function handleObjectiveStatusRequest(
     pendingAnalysisWindows: 0,
     lastAnalysisQueueWaitMs: null,
     lastAnalysisDurationMs: null,
+    collection: null,
     lastWindow: { session_id: null, epoch_id: null, start_ms: null, end_ms: null },
     baseline: { collection_complete: false, ready_modalities: [] },
     finalAnalysis: { session_id: null, state: "unavailable", available: false },
@@ -71,6 +72,13 @@ export function handleObjectiveStatusRequest(
     dependencies.configuredDeviceId,
   );
 
+  const liveAnalysisTelemetry = live.deliveredAnalysis === undefined
+    ? {}
+    : {
+      delivered_analysis: live.deliveredAnalysis,
+      dropped_analysis: live.droppedAnalysis ?? 0,
+    };
+
   response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
   response.end(`${JSON.stringify({
     configured_device_id: dependencies.configuredDeviceId,
@@ -94,6 +102,7 @@ export function handleObjectiveStatusRequest(
       connected_clients: live.connectedClients,
       delivered_packets: live.deliveredPackets,
       dropped_packets: live.droppedPackets,
+      ...liveAnalysisTelemetry,
     },
     storage: {
       queue_depth: storage.queueDepth,
@@ -116,9 +125,13 @@ export function handleObjectiveStatusRequest(
       analysis_queue_drops: analysisPipeline.queueDrops,
       last_analysis_queue_wait_ms: analysisPipeline.lastAnalysisQueueWaitMs,
       last_analysis_duration_ms: analysisPipeline.lastAnalysisDurationMs,
+      collection: analysisPipeline.collection,
       storage_queue_depth: analysisStorage.queueDepth,
+      analysis_result_storage_queue_depth: analysisStorage.queueDepth,
       storage_errors: analysisStorage.storageErrors,
+      analysis_result_storage_errors: analysisStorage.storageErrors,
       storage_drops: analysisStorage.storageDrops,
+      analysis_result_storage_drops: analysisStorage.storageDrops,
       last_window: analysisPipeline.lastWindow,
       final_analysis: {
         ...analysisPipeline.finalAnalysis,

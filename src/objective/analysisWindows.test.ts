@@ -36,6 +36,70 @@ test("window scheduler emits complete non-overlapping 10 second windows", () => 
   assert.equal(engine.getNextWindowEndMs(), 20_000);
 });
 
+test("collection snapshot reports the current completed-window boundary and bounded progress", () => {
+  const engine = new AnalysisWindowEngine();
+
+  assert.equal(engine.getCollectionSnapshot(), null);
+
+  engine.ingestPacket(acceptedPacket({
+    seq: 1,
+    plotT0Ms: 4_700,
+    t0Us: 5_700_000,
+    ecg: [[0, 1000, 0, 0]],
+  }));
+  assert.deepEqual(engine.getCollectionSnapshot(), {
+    session_id: "00000000-0000-4000-8000-000000000001",
+    epoch_id: "00000000-0000-4000-8000-000000000002",
+    latest_sample_ms: 4_700,
+    collecting_window_start_ms: 0,
+    collecting_window_end_ms: 10_000,
+    progress_ms: 4_700,
+    progress_fraction: 0.47,
+    window_duration_ms: 10_000,
+  });
+
+  const completed = engine.ingestPacket(acceptedPacket({
+    seq: 2,
+    plotT0Ms: 14_700,
+    t0Us: 15_700_000,
+    ecg: [[0, 1001, 0, 0]],
+  }));
+  assert.equal(completed.length, 1);
+  assert.deepEqual(engine.getCollectionSnapshot(), {
+    session_id: "00000000-0000-4000-8000-000000000001",
+    epoch_id: "00000000-0000-4000-8000-000000000002",
+    latest_sample_ms: 14_700,
+    collecting_window_start_ms: 10_000,
+    collecting_window_end_ms: 20_000,
+    progress_ms: 4_700,
+    progress_fraction: 0.47,
+    window_duration_ms: 10_000,
+  });
+});
+
+test("collection snapshot resets to the new epoch and never exposes a prior partial window", () => {
+  const engine = new AnalysisWindowEngine();
+  engine.ingestPacket(acceptedPacket({ seq: 1, plotT0Ms: 8_000, ecg: [[0, 1000, 0, 0]] }));
+  engine.ingestPacket(acceptedPacket({
+    seq: 1,
+    epochId: "00000000-0000-4000-8000-000000000003",
+    plotT0Ms: 1_000,
+    t0Us: 2_000_000,
+    ecg: [[0, 1001, 0, 0]],
+  }));
+
+  assert.deepEqual(engine.getCollectionSnapshot(), {
+    session_id: "00000000-0000-4000-8000-000000000001",
+    epoch_id: "00000000-0000-4000-8000-000000000003",
+    latest_sample_ms: 1_000,
+    collecting_window_start_ms: 0,
+    collecting_window_end_ms: 10_000,
+    progress_ms: 1_000,
+    progress_fraction: 0.1,
+    window_duration_ms: 10_000,
+  });
+});
+
 test("a sample exactly at the first window end is excluded then included in the next window", () => {
   const engine = new AnalysisWindowEngine();
   engine.ingestPacket(acceptedPacket({ seq: 1, ecg: [[0, 1000, 0, 0]] }));

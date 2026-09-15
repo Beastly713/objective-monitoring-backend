@@ -16,6 +16,7 @@ import { SequenceTracker } from "./sequenceTracker.js";
 import { ObjectiveSessionManager } from "./sessionManager.js";
 import { handleObjectiveStatusRequest } from "./statusRoutes.js";
 import { ObjectiveTimeMapper } from "./timeMapper.js";
+import type { ObjectiveAnalysisPipeline } from "./analysis/pipeline.js";
 
 function acceptedPacket(sessionId: string, sequence: number): AcceptedObjectivePacket {
   const rawPacket: SchemaV1Packet = {
@@ -277,7 +278,13 @@ test("status route composes existing snapshots without exposing secrets", async 
     }),
   } as DeviceGateway;
   const liveGateway = {
-    getSnapshot: () => ({ connectedClients: 2, deliveredPackets: 8, droppedPackets: 1 }),
+    getSnapshot: () => ({
+      connectedClients: 2,
+      deliveredPackets: 8,
+      droppedPackets: 1,
+      deliveredAnalysis: 4,
+      droppedAnalysis: 2,
+    }),
   } as LiveGateway;
   const packetStore = {
     getSnapshot: () => ({
@@ -290,6 +297,33 @@ test("status route composes existing snapshots without exposing secrets", async 
       degraded: true,
     }),
   } as ObjectivePacketStore;
+  const analysisPipeline = {
+    getSnapshot: () => ({
+      windowsEmitted: 1,
+      windowsFailed: 0,
+      packetProcessingFailures: 0,
+      queueDepth: 0,
+      queueDrops: 0,
+      pendingAnalysisWindows: 0,
+      lastAnalysisQueueWaitMs: 1,
+      lastAnalysisDurationMs: 2,
+      collection: {
+        session_id: "00000000-0000-4000-8000-000000000001",
+        epoch_id: "00000000-0000-4000-8000-000000000002",
+        latest_sample_ms: 14_700,
+        collecting_window_start_ms: 10_000,
+        collecting_window_end_ms: 20_000,
+        progress_ms: 4_700,
+        progress_fraction: 0.47,
+        window_duration_ms: 10_000,
+      },
+      lastWindow: { session_id: null, epoch_id: null, start_ms: null, end_ms: null },
+      baseline: { collection_complete: false, ready_modalities: [] },
+      finalAnalysis: { session_id: null, state: "unavailable", available: false },
+      pipelineHealthy: true,
+      degraded: false,
+    }),
+  } as unknown as ObjectiveAnalysisPipeline;
   const server = createServer((request, response) => {
     if (
       !handleObjectiveStatusRequest(request, response, {
@@ -299,6 +333,7 @@ test("status route composes existing snapshots without exposing secrets", async 
         sessionManager,
         liveGateway,
         packetStore,
+        analysisPipeline,
       })
     ) {
       response.writeHead(404).end();
@@ -315,6 +350,18 @@ test("status route composes existing snapshots without exposing secrets", async 
       connected_clients: 2,
       delivered_packets: 8,
       dropped_packets: 1,
+      delivered_analysis: 4,
+      dropped_analysis: 2,
+    });
+    assert.deepEqual((body.analysis as Record<string, unknown>).collection, {
+      session_id: "00000000-0000-4000-8000-000000000001",
+      epoch_id: "00000000-0000-4000-8000-000000000002",
+      latest_sample_ms: 14_700,
+      collecting_window_start_ms: 10_000,
+      collecting_window_end_ms: 20_000,
+      progress_ms: 4_700,
+      progress_fraction: 0.47,
+      window_duration_ms: 10_000,
     });
     assert.deepEqual(body.storage, {
       queue_depth: 6,

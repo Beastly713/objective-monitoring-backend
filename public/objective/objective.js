@@ -7,7 +7,19 @@
   const REPLAY_CHUNK_MS = 30_000;
   const REPLAY_VIEWPORT_MS = 30_000;
   const MAX_REPLAY_CACHE_CHUNKS = 3;
+  const MAX_LIVE_ANALYSIS_WINDOWS = 12;
+  const MAX_FINAL_ANALYSIS_CACHE = 8;
+  const FINAL_ANALYSIS_RETRY_LIMIT = 5;
+  const FINAL_ANALYSIS_RETRY_DELAY_MS = 2_500;
   const ANALYSIS_VERSION = "analysis-2.0";
+  const MODALITIES = ["ecg", "ppg", "gsr", "imu", "temperature"];
+  const MODALITY_LABELS = {
+    ecg: "ECG",
+    ppg: "PPG",
+    gsr: "GSR / EDA",
+    imu: "IMU",
+    temperature: "Temperature",
+  };
 
   const state = {
     mode: "live",
@@ -24,10 +36,17 @@
     currentEpochId: null,
     lastLiveBootId: null,
     liveAnalysisResult: null,
+    liveAnalysisWindows: [],
+    liveAnalysisSelectionKey: null,
+    liveAnalysisReceivedAt: new Map(),
     lastAnalysisWindowEndMs: null,
     finalAnalysisSessionId: null,
     finalAnalysisLoadedSessionId: null,
     finalAnalysisFetchPending: false,
+    finalAnalysisCache: new Map(),
+    finalAnalysisRequests: new Map(),
+    finalAnalysisRetryTimers: new Map(),
+    finalAnalysisRetryAttempts: new Map(),
     previousRateSample: null,
     errorSource: null,
     review: {
@@ -39,6 +58,7 @@
       playing: false,
       inspectionPositionMs: null,
       focusSignal: "all",
+      selectedAnalysisKey: null,
       previousAnimationNow: null,
       animationFrame: null,
       cache: new Map(),
@@ -91,6 +111,281 @@
     return `${formatNumber(value)}${unit ? ` ${unit}` : ""}`;
   }
 
+  function finiteNumber(value) {
+    if (value === null || value === undefined || value === "") return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function formatDurationMs(value) {
+    const number = finiteNumber(value);
+    return number === null ? "—" : formatReplayTime(Math.max(0, number));
+  }
+
+  function formatPercent(value) {
+    const number = finiteNumber(value);
+    return number === null ? "—" : `${Math.max(0, Math.min(100, number * 100)).toFixed(1)}%`;
+  }
+
+  function formatFeatureValue(value, meta) {
+    if (meta?.valid === false || value === null || value === undefined) return "Unavailable";
+    if (typeof value === "number") {
+      if (!Number.isFinite(value)) return "Unavailable";
+      return `${formatNumber(value)}${meta?.unit ? ` ${meta.unit}` : ""}`;
+    }
+    if (typeof value === "string" || typeof value === "boolean") return String(value);
+    return "Unavailable";
+  }
+
+  function featureLabel(feature) {
+    return String(feature)
+      .replaceAll("_", " ")
+      .replace(/\b\w/g, (character) => character.toUpperCase());
+  }
+
+  function createDefinitionGrid(container, entries) {
+    container.replaceChildren();
+    for (const [label, value] of entries) {
+      const item = document.createElement("div");
+      const term = document.createElement("dt");
+      const detail = document.createElement("dd");
+      term.textContent = label;
+      detail.textContent = value === null || value === undefined || value === "" ? "—" : String(value);
+      item.append(term, detail);
+      container.appendChild(item);
+    }
+  }
+
+  function createTable(headers, rows, className = "") {
+    const table = document.createElement("table");
+    if (className) table.className = className;
+    const head = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    headers.forEach((header) => {
+      const cell = document.createElement("th");
+      cell.textContent = header;
+      headRow.appendChild(cell);
+    });
+    head.appendChild(headRow);
+    table.appendChild(head);
+    const body = document.createElement("tbody");
+    rows.forEach((row) => {
+      const tableRow = document.createElement("tr");
+      row.forEach((value) => {
+        const cell = document.createElement("td");
+        cell.textContent = value === null || value === undefined ? "—" : String(value);
+        tableRow.appendChild(cell);
+      });
+      body.appendChild(tableRow);
+    });
+    table.appendChild(body);
+    return table;
+  }
+
+  function analysisIdentity(result) {
+    return [
+      result?.session_id ?? "",
+      result?.epoch_id ?? "",
+      result?.window?.start_ms ?? "",
+      result?.window?.end_ms ?? "",
+    ].join("|");
+  }
+
+  function windowNumber(result) {
+    const start = finiteNumber(result?.window?.start_ms);
+    return start === null ? null : Math.max(1, Math.floor(start / 10_000) + 1);
+  }
+
+  function windowRangeLabel(result, envelope) {
+    const replayStart = finiteNumber(envelope?.replay_start_ms);
+    const replayEnd = finiteNumber(envelope?.replay_end_ms);
+    const window = result?.window ?? {};
+    const start = replayStart ?? finiteNumber(window.start_ms);
+    const end = replayEnd ?? finiteNumber(window.end_ms);
+    if (start === null || end === null) return "Unknown window range";
+    return `T+${formatReplayTime(start)} – T+${formatReplayTime(end)}`;
+  }
+
+  function renderAnalysisBaseline(result) {
+    const baseline = result.baseline ?? {};
+    const readyModalities = Array.isArray(baseline.ready_modalities) ? baseline.ready_modalities : [];
+    const eligible = Array.isArray(result.baseline_update?.eligible_modalities)
+      ? result.baseline_update.eligible_modalities
+      : [];
+    const states = baseline.modality_states ?? {};
+    const stateText = result.baseline_ready === true
+      ? "Ready"
+      : baseline.collection_complete === true
+        ? "Collection complete · incomplete readiness"
+        : "Building";
+    setText("analysis-baseline-ready", stateText);
+    setTone(byId("analysis-baseline-ready"), result.baseline_ready === true ? "good" : "warn");
+    createDefinitionGrid(byId("analysis-baseline-detail"), [
+      ["Baseline used before this window", result.baseline_ready === true ? "Ready" : "Building / incomplete"],
+      ["Collection complete", baseline.collection_complete === true ? "Yes" : "No"],
+      ["Ready modalities", `${readyModalities.length}/5 · ${readyModalities.map((modality) => MODALITY_LABELS[modality] ?? String(modality)).join(", ") || "None"}`],
+      ["Eligible for next baseline", eligible.map((modality) => MODALITY_LABELS[modality] ?? String(modality)).join(", ") || "None"],
+      ...MODALITIES.map((modality) => [
+        MODALITY_LABELS[modality],
+        states[modality]?.state ?? "Unavailable",
+      ]),
+      ["Next baseline state", result.baseline_update?.baseline_after?.collection_complete === true ? "Collection complete" : "Still building / incomplete"],
+    ]);
+  }
+
+  function renderAnalysisSource(result) {
+    const source = result.source ?? {};
+    const packetGapCount = finiteNumber(source.packet_gap_count) ?? 0;
+    const sampleGapCount = finiteNumber(source.sample_gap_count) ?? 0;
+    const truncatedCount = finiteNumber(source.truncated_packet_count) ?? 0;
+    const inputGapCount = finiteNumber(source.analysis_input_gap_count) ?? 0;
+    const discardedCount = finiteNumber(source.discarded_out_of_order_samples) ?? 0;
+    const continuityProblems = packetGapCount + sampleGapCount + truncatedCount + inputGapCount + discardedCount;
+    setText("analysis-continuity-state", continuityProblems === 0 ? "Continuity clean" : `${continuityProblems} continuity flags`);
+    setTone(byId("analysis-continuity-state"), continuityProblems === 0 ? "good" : "warn");
+    createDefinitionGrid(byId("analysis-source-trace"), [
+      ["Packet count", formatNumber(finiteNumber(source.packet_count))],
+      ["First / last packet", `${formatNumber(finiteNumber(source.first_packet_seq))} / ${formatNumber(finiteNumber(source.last_packet_seq))}`],
+      ["Packet gaps", formatNumber(packetGapCount)],
+      ["Sample gaps", formatNumber(sampleGapCount)],
+      ["Truncated packets", formatNumber(truncatedCount)],
+      ["Analysis-input gaps", formatNumber(inputGapCount)],
+      ["Out-of-order samples discarded", formatNumber(discardedCount)],
+      ["Modalities present", (source.modalities_present ?? []).map((modality) => MODALITY_LABELS[modality] ?? String(modality)).join(", ") || "None"],
+    ]);
+  }
+
+  function ruleStatusText(evaluation) {
+    const evidence = Array.isArray(evaluation.evidence) && evaluation.evidence.length > 0
+      ? ` · ${evaluation.evidence.join("; ")}`
+      : "";
+    const threshold = evaluation.threshold_source ? ` · threshold: ${evaluation.threshold_source}` : "";
+    const inputs = evaluation.inputs && Object.keys(evaluation.inputs).length > 0
+      ? ` · inputs: ${JSON.stringify(evaluation.inputs)}`
+      : "";
+    return `${evaluation.rule_id}${evidence}${threshold}${inputs}`;
+  }
+
+  function renderAnalysisModalityDetails(result) {
+    const container = byId("analysis-modality-grid");
+    container.replaceChildren();
+    for (const modality of MODALITIES) {
+      const detail = result.modality_results?.[modality] ?? {};
+      const quality = detail.quality ?? {};
+      const card = document.createElement("article");
+      card.className = "modality-card";
+      const heading = document.createElement("h4");
+      heading.textContent = MODALITY_LABELS[modality];
+      const qualityLine = document.createElement("p");
+      qualityLine.className = `modality-quality quality-${quality.state ?? "unavailable"}`;
+      qualityLine.textContent = `${quality.state ?? "unavailable"} · ${formatNumber(finiteNumber(quality.sample_count))}/${formatNumber(finiteNumber(quality.expected_sample_count))} samples · ${formatPercent(quality.coverage_fraction)} coverage`;
+      card.append(heading, qualityLine);
+
+      const qualityTable = createTable(["Quality detail", "Value"], [
+        ["Maximum gap", formatDurationMs(quality.max_gap_ms)],
+        ["Packet gap", quality.packet_gap === true ? "Yes" : "No"],
+        ["Reasons", Array.isArray(quality.reason_codes) && quality.reason_codes.length > 0 ? quality.reason_codes.join(", ") : "None recorded"],
+      ]);
+      card.appendChild(qualityTable);
+
+      const featureRows = Object.entries(detail.features ?? {}).map(([feature, value]) => [
+        featureLabel(feature),
+        formatFeatureValue(value, detail.feature_meta?.[feature]),
+      ]);
+      card.appendChild(createTable(["Feature", "Value"], featureRows));
+
+      const relations = Object.entries(detail.feature_meta ?? {})
+        .filter(([, meta]) => meta?.baseline !== null && meta?.baseline !== undefined)
+        .map(([feature, meta]) => {
+          const relation = meta.baseline;
+          return `${featureLabel(feature)}: Δ ${formatFeatureValue(relation?.delta, { unit: meta.unit, valid: relation?.delta !== null })}, change ${formatFeatureValue(relation?.percent_change, { unit: "%", valid: relation?.percent_change !== null })}, z ${formatFeatureValue(relation?.robust_z, { unit: "", valid: relation?.robust_z !== null })}`;
+        });
+      if (relations.length > 0) {
+        const relationDetails = document.createElement("details");
+        const summary = document.createElement("summary");
+        summary.textContent = "Baseline relation details";
+        const list = document.createElement("ul");
+        relations.forEach((relation) => {
+          const item = document.createElement("li");
+          item.textContent = relation;
+          list.appendChild(item);
+        });
+        relationDetails.append(summary, list);
+        card.appendChild(relationDetails);
+      }
+
+      const evaluations = Array.isArray(detail.rule_evaluations) ? detail.rule_evaluations : [];
+      if (evaluations.length > 0) {
+        const ruleDetails = document.createElement("details");
+        const summary = document.createElement("summary");
+        summary.textContent = `Rule evaluations (${evaluations.length})`;
+        const list = document.createElement("ul");
+        evaluations.forEach((evaluation) => {
+          const item = document.createElement("li");
+          const status = document.createElement("span");
+          status.className = `rule-status ${evaluation.status}`;
+          status.textContent = evaluation.status.replace("_", " ");
+          item.append(status, document.createTextNode(ruleStatusText(evaluation)));
+          list.appendChild(item);
+        });
+        ruleDetails.append(summary, list);
+        card.appendChild(ruleDetails);
+      }
+      container.appendChild(card);
+    }
+  }
+
+  function renderAnalysisRules(result) {
+    const evaluations = [];
+    for (const modality of MODALITIES) {
+      for (const evaluation of result.modality_results?.[modality]?.rule_evaluations ?? []) {
+        evaluations.push({ ...evaluation, modality });
+      }
+    }
+    const multimodalRuleIds = result.multimodal_result?.rule_ids ?? [];
+    for (const ruleId of multimodalRuleIds) {
+      evaluations.push({
+        rule_id: ruleId,
+        status: "fired",
+        inputs: {},
+        evidence: [result.multimodal_result?.explanation ?? "Multimodal rule fired"],
+        threshold_source: "prototype_heuristic",
+        modality: "multimodal",
+      });
+    }
+    const uniqueEvaluations = evaluations.filter((evaluation, index, values) =>
+      values.findIndex((candidate) => candidate.rule_id === evaluation.rule_id && candidate.modality === evaluation.modality) === index);
+    const fired = uniqueEvaluations.filter((evaluation) => evaluation.status === "fired");
+    setText("analysis-fired-rule-count", `${fired.length} fired · ${uniqueEvaluations.length} evaluated`);
+    setTone(byId("analysis-fired-rule-count"), fired.length > 0 ? "good" : "neutral");
+    const firedContainer = byId("analysis-fired-rules");
+    firedContainer.replaceChildren();
+    fired.forEach((evaluation) => {
+      const chip = document.createElement("span");
+      chip.className = "fired-rule";
+      chip.textContent = evaluation.rule_id;
+      chip.title = ruleStatusText(evaluation);
+      firedContainer.appendChild(chip);
+    });
+    const list = byId("analysis-rule-list");
+    list.replaceChildren();
+    if (uniqueEvaluations.length === 0) {
+      const item = document.createElement("li");
+      item.textContent = "No deterministic rule evaluations were recorded.";
+      list.appendChild(item);
+      return;
+    }
+    uniqueEvaluations.forEach((evaluation) => {
+      const item = document.createElement("li");
+      item.className = `${evaluation.status}-rule-row`;
+      const status = document.createElement("span");
+      status.className = `rule-status ${evaluation.status}`;
+      status.textContent = evaluation.status.replace("_", " ");
+      item.append(status, document.createTextNode(`${evaluation.rule_id} · ${ruleStatusText(evaluation)}`));
+      list.appendChild(item);
+    });
+  }
+
   function renderAnalysisResult(result, options = {}) {
     const empty = byId("analysis-empty");
     const content = byId("analysis-content");
@@ -103,115 +398,379 @@
 
     const multimodal = result.multimodal_result ?? {};
     const window = result.window ?? {};
-    const envelope = options.envelope;
-    const replayStart = Number(envelope?.replay_start_ms);
-    const replayEnd = Number(envelope?.replay_end_ms);
-    const windowLabel = Number.isFinite(replayStart) && Number.isFinite(replayEnd)
-      ? `T+${formatReplayTime(replayStart)} – T+${formatReplayTime(replayEnd)} · epoch ${shortId(result.epoch_id)}`
-      : `${formatReplayTime(Number(window.start_ms))} – ${formatReplayTime(Number(window.end_ms))} · epoch-relative`;
+    const completedWindowNumber = windowNumber(result);
     const supporting = Array.isArray(multimodal.supporting_modalities)
-      ? multimodal.supporting_modalities.map((modality) => String(modality).toUpperCase()).join(" · ")
-      : "";
-    const qualities = ["ecg", "ppg", "gsr", "imu", "temperature"].map((modality) => {
-      const quality = result.modality_results?.[modality]?.quality?.state ?? "unavailable";
-      return { modality, quality };
-    });
-    const featureSummary = [
-      `ECG HR ${analysisFeatureValue(result, "ecg", "heart_rate_bpm", "bpm")}`,
-      `PPG pulse ${analysisFeatureValue(result, "ppg", "pulse_rate_bpm", "bpm")}`,
-      `GSR raw mean ${analysisFeatureValue(result, "gsr", "gsr_raw_mean", "counts")}`,
-      `IMU motion ${analysisFeatureValue(result, "imu", "motion_index_g", "g")}`,
-      `Temperature ${analysisFeatureValue(result, "temperature", "temperature_mean_c", "°C")}`,
-    ].join(" · ");
-    const ruleIds = [
-      ...(Array.isArray(result.rules_triggered) ? result.rules_triggered : []),
-      ...(Array.isArray(multimodal.rule_ids) ? multimodal.rule_ids : []),
-    ].filter((ruleId, index, values) => values.indexOf(ruleId) === index);
-
-    const completedWindowNumber = Number.isFinite(Number(window.end_ms))
-      ? Math.max(1, Math.round(Number(window.end_ms) / 10_000))
-      : null;
+      ? multimodal.supporting_modalities.map((modality) => MODALITY_LABELS[modality] ?? String(modality)).join(" · ")
+      : "None recorded";
+    const contradicting = Array.isArray(multimodal.contradicting_modalities)
+      ? multimodal.contradicting_modalities.map((modality) => MODALITY_LABELS[modality] ?? String(modality)).join(" · ")
+      : "None recorded";
     setText(
       "analysis-context",
       options.mode === "review"
         ? "Historical completed window"
-        : completedWindowNumber === null ? "Live analysis" : `Completed W${completedWindowNumber}`,
+        : completedWindowNumber === null ? "Completed window" : `Completed W${completedWindowNumber}`,
     );
     setText("analysis-pattern", multimodal.pattern ?? "No pattern recorded");
     setText("analysis-evidence", multimodal.evidence_tier ?? "insufficient");
-    setText("analysis-window", windowLabel);
-    setText("analysis-supporting-signals", supporting || "None recorded");
-    setText(
-      "analysis-feature-summary",
-      `${featureSummary} · Baseline reference ${result.baseline_ready === true ? "ready" : "building or incomplete"}`,
-    );
-    const qualitySummary = byId("analysis-quality-summary");
-    qualitySummary.replaceChildren();
-    for (const { modality, quality } of qualities) {
-      const chip = document.createElement("span");
-      chip.className = `analysis-quality-chip quality-${quality}`;
-      chip.textContent = `${modality.toUpperCase()} ${quality}`;
-      qualitySummary.appendChild(chip);
-    }
-    const ruleList = byId("analysis-rule-list");
-    ruleList.replaceChildren();
-    if (ruleIds.length === 0) {
-      const item = document.createElement("li");
-      item.textContent = "No deterministic rule observations for this window.";
-      ruleList.appendChild(item);
-    } else {
-      for (const ruleId of ruleIds) {
-        const item = document.createElement("li");
-        item.textContent = String(ruleId);
-        ruleList.appendChild(item);
-      }
-    }
+    setText("analysis-window", `${windowRangeLabel(result, options.envelope)} · epoch ${shortId(result.epoch_id)}${completedWindowNumber === null ? "" : ` · W${completedWindowNumber}`}`);
+    setText("analysis-version", result.analysis_version ?? "Unavailable");
+    setText("analysis-explanation", multimodal.explanation ?? "No explanation recorded.");
+    setText("analysis-supporting-signals", `Supporting: ${supporting} · Contradicting: ${contradicting}`);
+    setText("analysis-created-at", formatTime(finiteNumber(result.created_at_ms)));
+    setText("analysis-feature-summary", MODALITIES.map((modality) => {
+      const features = result.modality_results?.[modality]?.features ?? {};
+      const key = modality === "ecg" ? "heart_rate_bpm" : modality === "ppg" ? "pulse_rate_bpm" : modality === "gsr" ? "gsr_raw_mean" : modality === "imu" ? "motion_index_g" : "temperature_mean_c";
+      return `${MODALITY_LABELS[modality]} ${formatFeatureValue(features[key], result.modality_results?.[modality]?.feature_meta?.[key])}`;
+    }).join(" · "));
+    setText("analysis-quality-summary", MODALITIES.map((modality) => `${MODALITY_LABELS[modality]} ${result.modality_results?.[modality]?.quality?.state ?? "unavailable"}`).join(" · "));
+    renderAnalysisBaseline(result);
+    renderAnalysisSource(result);
+    renderAnalysisModalityDetails(result);
+    renderAnalysisRules(result);
     empty.hidden = true;
     content.hidden = false;
   }
 
-  function clearLiveAnalysis(clearPanel = state.mode === "live") {
-    state.liveAnalysisResult = null;
-    state.lastAnalysisWindowEndMs = null;
+  function renderAnalysisWindowList(rows, options = {}) {
+    const list = byId("recent-analysis-windows");
+    const empty = byId("recent-analysis-empty");
+    list.replaceChildren();
+    empty.hidden = rows.length > 0;
+    for (const row of rows) {
+      const result = row.result ?? row.envelope?.result;
+      const key = row.key ?? analysisIdentity(result);
+      const item = document.createElement("li");
+      item.className = "recent-analysis-row";
+      item.classList.toggle("selected", key === options.selectedKey);
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "recent-analysis-button";
+      const number = windowNumber(result);
+      const title = document.createElement("strong");
+      title.textContent = `${number === null ? "Completed" : `W${number}`} · ${result?.multimodal_result?.evidence_tier ?? "insufficient"}`;
+      const range = document.createElement("span");
+      range.textContent = `${windowRangeLabel(result, row.envelope)} · ${result?.multimodal_result?.pattern ?? "No pattern"}`;
+      const quality = document.createElement("span");
+      quality.textContent = MODALITIES.map((modality) => `${modality.toUpperCase()} ${result?.modality_results?.[modality]?.quality?.state ?? "unavailable"}`).join(" · ");
+      button.append(title, range, quality);
+      button.addEventListener("click", () => options.onSelect?.(key, row));
+      item.appendChild(button);
+      list.appendChild(item);
+    }
+  }
+
+  function renderLiveAnalysisWindows() {
+    const rows = state.liveAnalysisWindows.map((result) => ({ result, key: analysisIdentity(result) }));
+    setText("recent-analysis-context", rows.length > 0 ? `${rows.length} recent completed windows · live` : "Updated by completed results");
+    const receivedAt = state.liveAnalysisReceivedAt.get(state.liveAnalysisSelectionKey);
+    setText("analysis-result-received", receivedAt === undefined ? "Not received in this browser" : formatTime(receivedAt));
+    renderAnalysisWindowList(rows, {
+      selectedKey: state.liveAnalysisSelectionKey,
+      onSelect: (key, row) => {
+        state.liveAnalysisSelectionKey = key;
+        state.liveAnalysisResult = row.result;
+        renderAnalysisResult(row.result, { mode: "live" });
+        renderLiveAnalysisWindows();
+      },
+    });
+  }
+
+  function clearLiveAnalysis(clearPanel = state.mode === "live", clearHistory = true) {
+    if (clearHistory) {
+      state.liveAnalysisResult = null;
+      state.lastAnalysisWindowEndMs = null;
+      state.liveAnalysisWindows = [];
+      state.liveAnalysisSelectionKey = null;
+      state.liveAnalysisReceivedAt.clear();
+    } else if (state.liveAnalysisResult !== null) {
+      state.liveAnalysisSelectionKey = analysisIdentity(state.liveAnalysisResult);
+    }
+    renderLiveAnalysisWindows();
     if (clearPanel) renderAnalysisResult(null);
   }
 
-  function renderFinalAnalysisState(finalAnalysis, sessionId = state.finalAnalysisSessionId) {
+  function renderFinalAnalysisResult(result) {
+    const session = result.session ?? {};
+    const coverage = result.window_coverage ?? {};
+    const quality = result.quality ?? {};
+    const baseline = result.baseline ?? {};
+    const missing = Array.isArray(coverage.missing_windows) ? coverage.missing_windows : [];
+    const tails = Array.isArray(coverage.incomplete_tails) ? coverage.incomplete_tails : [];
+    setText("final-analysis-version", result.analysis_version ?? "Unavailable");
+    createDefinitionGrid(byId("final-session-coverage"), [
+      ["Analysis version", result.analysis_version ?? "Unavailable"],
+      ["Duration", formatDurationMs(session.duration_ms)],
+      ["Start / end", `${formatDurationMs(session.start_ms)} → ${formatDurationMs(session.end_ms)}`],
+      ["Epochs", `${formatNumber(session.epoch_count)} · ${(session.epoch_ids ?? []).map(shortId).join(", ") || "None"}`],
+      ["Completed windows", formatNumber(session.completed_window_count)],
+      ["Incomplete tail", session.incomplete_tail_present === true ? formatDurationMs(session.incomplete_tail_duration_ms) : "None"],
+      ["Finalized", formatTime(finiteNumber(session.finalization_timestamp_ms))],
+      ["Missing windows", missing.length === 0 ? "None" : `${missing.length} · ${missing.map((window) => `${shortId(window.epoch_id)} ${formatDurationMs(window.start_ms)}–${formatDurationMs(window.end_ms)} (${window.reason})`).join("; ")}`],
+      ["Incomplete tails", tails.length === 0 ? "None" : tails.map((tail) => `${shortId(tail.epoch_id)} ${formatDurationMs(tail.start_ms)}–${formatDurationMs(tail.end_ms)} (${formatDurationMs(tail.duration_ms)})`).join("; ")],
+    ]);
+
+    const qualityRows = MODALITIES.map((modality) => {
+      const counts = quality.modality_quality_states?.[modality] ?? {};
+      return [
+        MODALITY_LABELS[modality],
+        formatNumber(finiteNumber(counts.good)),
+        formatNumber(finiteNumber(counts.usable)),
+        formatNumber(finiteNumber(counts.limited)),
+        formatNumber(finiteNumber(counts.unavailable)),
+      ];
+    });
+    const qualityContainer = byId("final-session-quality");
+    qualityContainer.replaceChildren(
+      createTable(["Modality", "Good", "Usable", "Limited", "Unavailable"], qualityRows),
+    );
+    const qualityNote = document.createElement("p");
+    qualityNote.className = "final-analysis-note";
+    qualityNote.textContent = `Source totals · packets ${formatNumber(finiteNumber(quality.packet_count))} · packet gaps ${formatNumber(finiteNumber(quality.packet_gap_count))} · sample gaps ${formatNumber(finiteNumber(quality.sample_gap_count))} · truncated ${formatNumber(finiteNumber(quality.truncated_packet_count))} · analysis-input gaps ${formatNumber(finiteNumber(quality.analysis_input_gap_count))}`;
+    qualityContainer.appendChild(qualityNote);
+
+    const baselineContainer = byId("final-session-baseline");
+    baselineContainer.replaceChildren();
+    createDefinitionGrid(baselineContainer, [
+      ["Collection complete", baseline.collection_complete === true ? "Yes" : "No"],
+      ["Ready modalities", `${(baseline.ready_modalities ?? []).length}/5 · ${(baseline.ready_modalities ?? []).map((modality) => MODALITY_LABELS[modality] ?? String(modality)).join(", ") || "None"}`],
+    ]);
+    if (baseline.summary?.modality_states) {
+      const states = document.createElement("p");
+      states.className = "final-analysis-note";
+      states.textContent = MODALITIES.map((modality) => `${MODALITY_LABELS[modality]}: ${baseline.summary.modality_states[modality]?.state ?? "unavailable"}`).join(" · ");
+      baselineContainer.appendChild(states);
+    }
+
+    const ruleRows = Object.entries(result.rule_summary ?? {})
+      .sort(([, left], [, right]) => Number(right.fired_window_count ?? 0) - Number(left.fired_window_count ?? 0))
+      .map(([ruleId, summary]) => [
+        ruleId,
+        formatNumber(finiteNumber(summary.fired_window_count)),
+        summary.first_fired_window ? `W${Math.max(1, Math.floor(Number(summary.first_fired_window.start_ms) / 10_000) + 1)}` : "Never",
+        summary.last_fired_window ? `W${Math.max(1, Math.floor(Number(summary.last_fired_window.start_ms) / 10_000) + 1)}` : "—",
+        formatNumber(finiteNumber(summary.longest_consecutive_run)),
+      ]);
+    byId("final-session-rules").replaceChildren(
+      ruleRows.length > 0
+        ? createTable(["Rule", "Fired windows", "First", "Last", "Longest run"], ruleRows)
+        : Object.assign(document.createElement("p"), { className: "final-analysis-note", textContent: "No rule summary entries were persisted." }),
+    );
+
+    const multimodal = result.multimodal_summary ?? {};
+    const patternRows = Object.entries(multimodal.patterns ?? {}).map(([pattern, summary]) => [
+      pattern,
+      formatNumber(finiteNumber(summary.count)),
+      summary.first_window ? `W${Math.max(1, Math.floor(Number(summary.first_window.start_ms) / 10_000) + 1)}` : "—",
+      summary.last_window ? `W${Math.max(1, Math.floor(Number(summary.last_window.start_ms) / 10_000) + 1)}` : "—",
+      (summary.supporting_modalities ?? []).map((modality) => MODALITY_LABELS[modality] ?? String(modality)).join(", ") || "None",
+      (summary.evidence_tiers ?? []).join(", ") || "—",
+    ]);
+    const multimodalContainer = byId("final-session-multimodal");
+    multimodalContainer.replaceChildren(
+      patternRows.length > 0
+        ? createTable(["Pattern", "Count", "First", "Last", "Supporting", "Evidence tiers"], patternRows)
+        : Object.assign(document.createElement("p"), { className: "final-analysis-note", textContent: "No multimodal patterns were persisted." }),
+    );
+    const multimodalNote = document.createElement("p");
+    multimodalNote.className = "final-analysis-note";
+    multimodalNote.textContent = `Contradiction windows: ${formatNumber(finiteNumber(multimodal.contradiction_window_count))} · Evidence tiers: ${Object.entries(multimodal.evidence_tier_counts ?? {}).map(([tier, count]) => `${tier} ${count}`).join(" · ") || "None"}`;
+    multimodalContainer.appendChild(multimodalNote);
+
+    const trendsContainer = byId("final-session-trends");
+    trendsContainer.replaceChildren();
+    for (const modality of MODALITIES) {
+      const trends = result.feature_trends?.[modality] ?? {};
+      const entries = Object.entries(trends);
+      if (entries.length === 0) continue;
+      const heading = document.createElement("h5");
+      heading.textContent = MODALITY_LABELS[modality];
+      trendsContainer.appendChild(heading);
+      trendsContainer.appendChild(createTable(
+        ["Feature", "Valid windows", "First", "Last", "Median", "Change"],
+        entries.map(([feature, trend]) => [
+          featureLabel(feature),
+          formatNumber(finiteNumber(trend.valid_window_count)),
+          formatFeatureValue(trend.first_valid, { valid: trend.first_valid !== null }),
+          formatFeatureValue(trend.last_valid, { valid: trend.last_valid !== null }),
+          formatFeatureValue(trend.median, { valid: trend.median !== null }),
+          formatFeatureValue(trend.change_from_first_to_last, { valid: trend.change_from_first_to_last !== null }),
+        ]),
+      ));
+    }
+    if (trendsContainer.children.length === 0) {
+      const note = document.createElement("p");
+      note.className = "final-analysis-note";
+      note.textContent = "No valid feature trends were persisted.";
+      trendsContainer.appendChild(note);
+    }
+
+    const observations = Array.isArray(result.window_observations) ? result.window_observations : [];
+    const observationRows = observations.map((observation) => [
+      `W${Math.max(1, Math.floor(Number(observation.window?.start_ms ?? 0) / 10_000) + 1)}`,
+      formatDurationMs(observation.window?.start_ms),
+      formatDurationMs(observation.window?.end_ms),
+      (observation.rules_triggered ?? []).join(", ") || "None",
+      observation.multimodal_pattern ?? "—",
+      observation.evidence_tier ?? "—",
+      (observation.supporting_modalities ?? []).map((modality) => MODALITY_LABELS[modality] ?? String(modality)).join(", ") || "None",
+    ]);
+    byId("final-session-observations").replaceChildren(
+      observationRows.length > 0
+        ? createTable(["Window", "Start", "End", "Rules", "Pattern", "Evidence", "Supporting"], observationRows)
+        : Object.assign(document.createElement("p"), { className: "final-analysis-note", textContent: "No completed window observations were persisted." }),
+    );
+  }
+
+  function renderFinalAnalysisState(finalAnalysis, sessionId = state.finalAnalysisSessionId, options = {}) {
     const stateText = finalAnalysis?.state ?? "unavailable";
     const result = finalAnalysis?.result;
     setText("final-analysis-state", sessionId ? `${stateText} · ${shortId(sessionId)}` : stateText);
     if (stateText === "complete" && result?.session) {
-      const completed = Number(result.session.completed_window_count);
+      renderFinalAnalysisResult(result);
+      byId("final-analysis-content").hidden = false;
+      const completed = finiteNumber(result.session.completed_window_count) ?? 0;
       const tail = result.session.incomplete_tail_present === true
-        ? ` · incomplete tail ${formatReplayTime(Number(result.session.incomplete_tail_duration_ms))}`
+        ? ` · incomplete tail ${formatDurationMs(result.session.incomplete_tail_duration_ms)}`
         : "";
       setText("analysis-final-summary", `Final session synthesis ready · ${formatNumber(completed)} completed windows${tail}.`);
+    } else if (stateText === "complete") {
+      byId("final-analysis-content").hidden = true;
+      setText("analysis-final-summary", "Final session synthesis is persisted; loading its detailed result…");
     } else if (stateText === "pending") {
-      setText("analysis-final-summary", "Finalizing session analysis… completed windows are being drained.");
+      byId("final-analysis-content").hidden = true;
+      setText("analysis-final-summary", options.loading === true
+        ? "Loading final session synthesis…"
+        : "Finalizing session analysis… persistence pending while completed windows drain.");
     } else if (stateText === "error") {
-      setText("analysis-final-summary", "Final session synthesis reported an analysis error.");
+      byId("final-analysis-content").hidden = true;
+      setText("analysis-final-summary", "Final session synthesis could not be read because the analysis path reported an error.");
     } else {
-      setText("analysis-final-summary", "Final session synthesis is unavailable until the completed windows are drained.");
+      byId("final-analysis-content").hidden = true;
+      setText("analysis-final-summary", options.mode === "review"
+        ? `No persisted final synthesis is available for ${shortId(sessionId)} at ${ANALYSIS_VERSION}.`
+        : sessionId
+          ? "Final session synthesis will be available after STOP and persistence completes."
+          : "No final session synthesis is selected.");
     }
   }
 
-  async function refreshFinalAnalysis(sessionId) {
-    if (!sessionId || state.finalAnalysisFetchPending) return;
-    state.finalAnalysisFetchPending = true;
-    renderFinalAnalysisState({ state: "pending" }, sessionId);
-    try {
-      const response = await requestJson(`/api/objective/sessions/${encodeURIComponent(sessionId)}/final-analysis`);
-      if (state.finalAnalysisSessionId !== sessionId && state.activeSessionId !== null) return;
-      state.finalAnalysisSessionId = sessionId;
-      state.finalAnalysisLoadedSessionId = response.final_analysis?.available === true ? sessionId : null;
-      renderFinalAnalysisState(response.final_analysis, sessionId);
-    } catch {
-      if (state.finalAnalysisSessionId === sessionId || state.activeSessionId === null) {
-        renderFinalAnalysisState({ state: "unavailable" }, sessionId);
-      }
-    } finally {
-      state.finalAnalysisFetchPending = false;
+  function finalAnalysisContextCurrent(sessionId, context) {
+    if (context.mode === "review") {
+      return state.mode === "review" &&
+        state.review.sessionId === sessionId &&
+        context.generation === state.review.selectionGeneration;
     }
+    return state.mode === "live" && state.finalAnalysisSessionId === sessionId;
+  }
+
+  function cacheFinalAnalysis(sessionId, finalAnalysis) {
+    state.finalAnalysisCache.delete(sessionId);
+    state.finalAnalysisCache.set(sessionId, finalAnalysis);
+    while (state.finalAnalysisCache.size > MAX_FINAL_ANALYSIS_CACHE) {
+      state.finalAnalysisCache.delete(state.finalAnalysisCache.keys().next().value);
+    }
+  }
+
+  function clearFinalAnalysisRetry(sessionId) {
+    const timer = state.finalAnalysisRetryTimers.get(sessionId);
+    if (timer !== undefined) window.clearTimeout(timer);
+    state.finalAnalysisRetryTimers.delete(sessionId);
+    state.finalAnalysisRetryAttempts.delete(sessionId);
+  }
+
+  function scheduleFinalAnalysisRetry(sessionId, context) {
+    if ((state.finalAnalysisRetryAttempts.get(sessionId) ?? 0) >= FINAL_ANALYSIS_RETRY_LIMIT) return;
+    if (state.finalAnalysisRetryTimers.has(sessionId)) return;
+    const attempts = (state.finalAnalysisRetryAttempts.get(sessionId) ?? 0) + 1;
+    state.finalAnalysisRetryAttempts.set(sessionId, attempts);
+    const timer = window.setTimeout(() => {
+      state.finalAnalysisRetryTimers.delete(sessionId);
+      if (finalAnalysisContextCurrent(sessionId, context)) void refreshFinalAnalysis(sessionId, context);
+    }, FINAL_ANALYSIS_RETRY_DELAY_MS);
+    state.finalAnalysisRetryTimers.set(sessionId, timer);
+  }
+
+  async function refreshFinalAnalysis(sessionId, context = {}) {
+    if (!sessionId) return null;
+    const requestContext = {
+      mode: context.mode ?? state.mode,
+      generation: context.generation ?? state.review.selectionGeneration,
+      loading: context.loading === true,
+    };
+    const cached = state.finalAnalysisCache.get(sessionId);
+    if (cached?.state === "complete" || cached?.state === "unavailable" || cached?.state === "error") {
+      if (finalAnalysisContextCurrent(sessionId, requestContext)) {
+        state.finalAnalysisSessionId = sessionId;
+        state.finalAnalysisLoadedSessionId = cached.state === "complete" ? sessionId : null;
+        renderFinalAnalysisState(cached, sessionId, requestContext);
+      }
+      return cached;
+    }
+    if (cached?.state === "pending" &&
+      (state.finalAnalysisRetryAttempts.get(sessionId) ?? 0) >= FINAL_ANALYSIS_RETRY_LIMIT) {
+      if (finalAnalysisContextCurrent(sessionId, requestContext)) {
+        state.finalAnalysisSessionId = sessionId;
+        renderFinalAnalysisState(cached, sessionId, requestContext);
+      }
+      return cached;
+    }
+    const existing = state.finalAnalysisRequests.get(sessionId);
+    if (existing !== undefined) {
+      return existing.then((finalAnalysis) => {
+        if (finalAnalysis.state === "pending") {
+          if (finalAnalysisContextCurrent(sessionId, requestContext)) {
+            clearFinalAnalysisRetry(sessionId);
+            scheduleFinalAnalysisRetry(sessionId, requestContext);
+          }
+        } else {
+          clearFinalAnalysisRetry(sessionId);
+        }
+        if (finalAnalysisContextCurrent(sessionId, requestContext)) {
+          state.finalAnalysisSessionId = sessionId;
+          state.finalAnalysisLoadedSessionId = finalAnalysis.state === "complete" ? sessionId : null;
+          renderFinalAnalysisState(finalAnalysis, sessionId, requestContext);
+        }
+        return finalAnalysis;
+      });
+    }
+    if (finalAnalysisContextCurrent(sessionId, requestContext)) {
+      state.finalAnalysisSessionId = sessionId;
+      renderFinalAnalysisState({ state: "pending" }, sessionId, requestContext);
+    }
+    state.finalAnalysisFetchPending = true;
+    const request = requestJson(`/api/objective/sessions/${encodeURIComponent(sessionId)}/final-analysis`)
+      .then((response) => {
+        const finalAnalysis = response?.final_analysis ?? { state: "unavailable", available: false, result: null };
+        cacheFinalAnalysis(sessionId, finalAnalysis);
+        if (finalAnalysis.state === "pending") {
+          scheduleFinalAnalysisRetry(sessionId, requestContext);
+        } else {
+          clearFinalAnalysisRetry(sessionId);
+        }
+        if (finalAnalysisContextCurrent(sessionId, requestContext)) {
+          state.finalAnalysisSessionId = sessionId;
+          state.finalAnalysisLoadedSessionId = finalAnalysis.state === "complete" ? sessionId : null;
+          renderFinalAnalysisState(finalAnalysis, sessionId, requestContext);
+        }
+        return finalAnalysis;
+      })
+      .catch((error) => {
+        const finalAnalysis = { state: "error", available: false, result: null, error: error.message };
+        cacheFinalAnalysis(sessionId, finalAnalysis);
+        clearFinalAnalysisRetry(sessionId);
+        if (finalAnalysisContextCurrent(sessionId, requestContext)) {
+          state.finalAnalysisSessionId = sessionId;
+          renderFinalAnalysisState(finalAnalysis, sessionId, requestContext);
+        }
+        return finalAnalysis;
+      })
+      .finally(() => {
+        state.finalAnalysisRequests.delete(sessionId);
+        state.finalAnalysisFetchPending = state.finalAnalysisRequests.size > 0;
+      });
+    state.finalAnalysisRequests.set(sessionId, request);
+    return request;
   }
 
   function showError(message, source) {
@@ -452,13 +1011,25 @@
       result.session_id !== state.activeSessionId ||
       result.epoch_id !== state.currentEpochId
     ) return;
-    const windowEndMs = Number(result.window?.end_ms);
-    if (!Number.isFinite(windowEndMs)) return;
-    if (state.lastAnalysisWindowEndMs !== null && windowEndMs <= state.lastAnalysisWindowEndMs) return;
+    const windowStartMs = finiteNumber(result.window?.start_ms);
+    const windowEndMs = finiteNumber(result.window?.end_ms);
+    if (windowStartMs === null || windowEndMs === null || windowEndMs <= windowStartMs) return;
+    const key = analysisIdentity(result);
+    if (state.liveAnalysisWindows.some((existing) => analysisIdentity(existing) === key)) return;
+    state.liveAnalysisWindows.push(result);
+    state.liveAnalysisReceivedAt.set(key, Date.now());
+    state.liveAnalysisWindows.sort((left, right) =>
+      (finiteNumber(left.window?.start_ms) ?? 0) - (finiteNumber(right.window?.start_ms) ?? 0));
+    if (state.liveAnalysisWindows.length > MAX_LIVE_ANALYSIS_WINDOWS) {
+      const removed = state.liveAnalysisWindows.splice(0, state.liveAnalysisWindows.length - MAX_LIVE_ANALYSIS_WINDOWS);
+      removed.forEach((oldResult) => state.liveAnalysisReceivedAt.delete(analysisIdentity(oldResult)));
+    }
     state.liveAnalysisResult = result;
-    state.lastAnalysisWindowEndMs = windowEndMs;
+    state.liveAnalysisSelectionKey = key;
+    state.lastAnalysisWindowEndMs = Math.max(state.lastAnalysisWindowEndMs ?? 0, windowEndMs);
     renderAnalysisResult(result, { mode: "live" });
-    setText("analysis-window-state", `W${Math.max(1, Math.round(windowEndMs / 10_000))} complete`);
+    renderLiveAnalysisWindows();
+    setText("analysis-window-state", `W${windowNumber(result) ?? "—"} complete`);
   }
 
   function replayDuration() {
@@ -762,9 +1333,43 @@
     return matches.at(-1) ?? null;
   }
 
+  function cachedHistoricalAnalysisRows() {
+    const rowsByKey = new Map();
+    for (const entry of state.review.analysisCache.values()) {
+      if (entry.status !== "ready") continue;
+      for (const envelope of entry.results) {
+        const result = envelope?.result;
+        if (!result) continue;
+        const key = analysisIdentity(result);
+        rowsByKey.set(key, { key, envelope });
+      }
+    }
+    return Array.from(rowsByKey.values()).sort((left, right) => {
+      const startDifference = (finiteNumber(left.envelope.replay_start_ms) ?? 0) - (finiteNumber(right.envelope.replay_start_ms) ?? 0);
+      if (startDifference !== 0) return startDifference;
+      return (finiteNumber(left.envelope.replay_end_ms) ?? 0) - (finiteNumber(right.envelope.replay_end_ms) ?? 0);
+    });
+  }
+
+  function renderReviewAnalysisWindows() {
+    const rows = cachedHistoricalAnalysisRows();
+    setText("recent-analysis-context", rows.length > 0 ? `${rows.length} completed windows in loaded review chunks` : "Bounded loaded review chunks only");
+    setText("analysis-result-received", state.review.selectedAnalysisKey ? "Persisted historical result" : "—");
+    renderAnalysisWindowList(rows, {
+      selectedKey: state.review.selectedAnalysisKey,
+      onSelect: (key, row) => {
+        state.review.selectedAnalysisKey = key;
+        renderAnalysisResult(row.envelope.result, { mode: "review", envelope: row.envelope });
+        renderReviewAnalysisWindows();
+      },
+    });
+  }
+
   function renderHistoricalAnalysisAtCursor(replayPositionMs) {
     if (state.mode !== "review") return;
     if (replayPositionMs > state.review.replayPositionMs) {
+      state.review.selectedAnalysisKey = null;
+      renderReviewAnalysisWindows();
       renderAnalysisResult(null, {
         emptyMessage: "Replay has not presented analysis at this cursor position yet.",
       });
@@ -772,6 +1377,8 @@
     }
     const selected = cachedHistoricalAnalysisAtCursor(replayPositionMs);
     if (selected?.envelope?.result) {
+      state.review.selectedAnalysisKey = analysisIdentity(selected.envelope.result);
+      renderReviewAnalysisWindows();
       renderAnalysisResult(selected.envelope.result, {
         mode: "review",
         envelope: selected.envelope,
@@ -780,6 +1387,8 @@
     }
 
     const loading = Array.from(state.review.analysisCache.values()).some((entry) => entry.status === "loading");
+    state.review.selectedAnalysisKey = null;
+    renderReviewAnalysisWindows();
     renderAnalysisResult(null, {
       emptyMessage: loading ? "Loading historical analysis…" : "Analysis not available for this interval.",
     });
@@ -1159,8 +1768,10 @@
     state.review.replayPositionMs = 0;
     state.review.replaySpeed = 1;
     state.review.inspectionPositionMs = null;
+    state.review.selectedAnalysisKey = null;
     state.review.cache.clear();
     state.review.analysisCache.clear();
+    renderReviewAnalysisWindows();
     byId("replay-speed").value = "1";
     byId("replay-seek").max = "0";
     setReplayControlsEnabled(false);
@@ -1181,10 +1792,17 @@
     byId("review-session-detail").title = sessionId || "";
 
     if (!sessionId) {
+      state.finalAnalysisSessionId = null;
+      state.finalAnalysisLoadedSessionId = null;
+      renderFinalAnalysisState({ state: "unavailable" }, null, { mode: "review" });
       setReplayStatus("Select a persisted session to review.");
       return;
     }
 
+    state.finalAnalysisSessionId = sessionId;
+    state.finalAnalysisLoadedSessionId = null;
+    renderFinalAnalysisState({ state: "pending" }, sessionId, { mode: "review", loading: true });
+    void refreshFinalAnalysis(sessionId, { mode: "review", generation, loading: true });
     setReplayStatus("Loading replay manifest…");
     try {
       const result = await requestJson(
@@ -1296,17 +1914,24 @@
       state.review.manifest = null;
       state.review.inspectionPositionMs = null;
       state.review.focusSignal = "all";
+      state.review.selectedAnalysisKey = null;
       state.review.cache.clear();
       state.review.analysisCache.clear();
       setReplayWarning("");
       clearError("replay");
       clearSignalState();
+      state.finalAnalysisSessionId = null;
+      state.finalAnalysisLoadedSessionId = null;
+      renderFinalAnalysisState({ state: "unavailable" }, null, { mode: "live" });
     }
     applyModePresentation();
     if (mode === "review") {
       void loadReplaySession(byId("review-session-select").value);
     } else if (state.activeSessionId) {
+      renderLiveAnalysisWindows();
       ensureLiveSocket(state.activeSessionId);
+    } else {
+      renderLiveAnalysisWindows();
     }
   }
 
@@ -1322,7 +1947,7 @@
     const webSocket = state.liveSocket;
     state.liveSocket = null;
     state.socketSessionId = null;
-    if (state.mode === "live") clearLiveAnalysis();
+    if (state.mode === "live") clearLiveAnalysis(false, false);
     if (webSocket !== null) webSocket.close();
     updateLiveBadge("Live socket idle", "neutral");
   }
@@ -1370,7 +1995,7 @@
       if (state.liveSocket !== webSocket) return;
       state.liveSocket = null;
       state.socketSessionId = null;
-      clearLiveAnalysis();
+      clearLiveAnalysis(false, false);
       updateLiveBadge("Live socket disconnected", "warn");
       if (state.mode === "live" && state.activeSessionId === sessionId && state.reconnectTimer === null) {
         state.reconnectTimer = window.setTimeout(() => {
@@ -1393,6 +2018,96 @@
     state.previousRateSample = { accepted, at: now };
   }
 
+  function renderAnalysisActivity(status, session) {
+    const analysis = status.analysis ?? {};
+    const activityHealth = byId("analysis-activity-health");
+    if (state.mode === "review") {
+      setText("analysis-activity-state", "Historical review selected");
+      setText("analysis-collection-window", "Live collection paused in REVIEW");
+      setText("analysis-collection-progress", "—");
+      setText("analysis-latest-completed", "Use the selected review window");
+      setText("analysis-baseline-state", "Shown per completed window");
+      setText("analysis-worker-state", "Live worker not shown");
+      setText("analysis-latest-sample", "—");
+      setText("analysis-result-received", state.review.selectedAnalysisKey ? "Persisted historical result" : "—");
+      byId("analysis-progress-bar").style.width = "0%";
+      setText("analysis-activity-health", "REVIEW MODE");
+      setTone(activityHealth, "neutral");
+      return;
+    }
+
+    const collection = analysis.collection;
+    const collectionBelongsToSession = collection !== null && collection !== undefined &&
+      (session === null || collection.session_id === session.session_id);
+    const finalState = analysis.final_analysis?.state;
+    if (session === null && finalState === "pending") {
+      setText("analysis-activity-state", "Finalizing session analysis");
+      setText("analysis-collection-window", "Completed windows draining");
+      setText("analysis-collection-progress", "No new window collection");
+      setText("analysis-latest-completed", "Awaiting final synthesis");
+      setText("analysis-baseline-state", "Final state pending");
+      setText("analysis-worker-state", `${formatNumber(analysis.pending_analysis_windows ?? analysis.queue_depth)} pending`);
+      setText("analysis-latest-sample", "—");
+      setText("analysis-result-received", "—");
+      byId("analysis-progress-bar").style.width = "100%";
+      setText("analysis-activity-health", "FINALIZING");
+      setTone(activityHealth, "warn");
+      return;
+    }
+    if (!session || !collectionBelongsToSession) {
+      setText("analysis-activity-state", "Waiting for an active session");
+      setText("analysis-collection-window", "No active collection");
+      setText("analysis-collection-progress", "—");
+      setText("analysis-latest-completed", finalState === "complete" ? "Final synthesis ready" : "—");
+      setText("analysis-baseline-state", "—");
+      setText("analysis-worker-state", "—");
+      setText("analysis-latest-sample", "—");
+      setText("analysis-result-received", "—");
+      byId("analysis-progress-bar").style.width = "0%";
+      setText("analysis-activity-health", finalState === "complete" ? "FINAL SYNTHESIS READY" : "NO ACTIVE ANALYSIS");
+      setTone(activityHealth, finalState === "complete" ? "good" : "neutral");
+      return;
+    }
+
+    const start = finiteNumber(collection.collecting_window_start_ms);
+    const end = finiteNumber(collection.collecting_window_end_ms);
+    const progress = finiteNumber(collection.progress_ms) ?? 0;
+    const fraction = finiteNumber(collection.progress_fraction) ?? 0;
+    const collectingNumber = start === null ? null : Math.max(1, Math.floor(start / 10_000) + 1);
+    const lastWindow = analysis.last_window?.session_id === collection.session_id &&
+      analysis.last_window?.epoch_id === collection.epoch_id
+      ? analysis.last_window
+      : null;
+    const lastNumber = finiteNumber(lastWindow?.start_ms) === null
+      ? null
+      : Math.max(1, Math.floor(Number(lastWindow.start_ms) / 10_000) + 1);
+    const pendingWindows = Math.max(0, Math.floor(finiteNumber(analysis.pending_analysis_windows ?? analysis.queue_depth) ?? 0));
+    const collectionLabel = collectingNumber === null ? "Collecting analysis window" : `Collecting W${collectingNumber}`;
+    setText("analysis-activity-state", pendingWindows > 0
+      ? `${collectionLabel} · analysing ${pendingWindows} completed window${pendingWindows === 1 ? "" : "s"}`
+      : collectionLabel);
+    setText("analysis-collection-window", start === null || end === null
+      ? "Window boundary unavailable"
+      : `T+${formatReplayTime(start)} → T+${formatReplayTime(end)}`);
+    setText("analysis-collection-progress", `${(progress / 1_000).toFixed(1)} / ${((finiteNumber(collection.window_duration_ms) ?? 10_000) / 1_000).toFixed(1)} s · ${formatPercent(fraction)}`);
+    setText("analysis-latest-completed", lastWindow === null
+      ? "None yet"
+      : `W${lastNumber} · T+${formatReplayTime(Number(lastWindow.start_ms))} → T+${formatReplayTime(Number(lastWindow.end_ms))}`);
+    const readyModalities = Array.isArray(analysis.baseline?.ready_modalities) ? analysis.baseline.ready_modalities : [];
+    setText("analysis-baseline-state", `${analysis.baseline?.collection_complete === true ? "Complete" : "Building"} · ${readyModalities.length}/5 ready`);
+    setText("analysis-worker-state", `${formatNumber(analysis.pending_analysis_windows ?? analysis.queue_depth)} pending · ${formatNumber(analysis.analysis_queue_drops ?? analysis.queue_drops)} dropped`);
+    const latestSample = finiteNumber(collection.latest_sample_ms);
+    setText("analysis-latest-sample", latestSample === null ? "No sample yet" : `T+${formatReplayTime(latestSample)}`);
+    const receivedAt = state.liveAnalysisReceivedAt.get(state.liveAnalysisSelectionKey);
+    setText("analysis-result-received", receivedAt === undefined ? "Not received in this browser" : formatTime(receivedAt));
+    byId("analysis-progress-bar").style.width = `${Math.max(0, Math.min(100, fraction * 100))}%`;
+    const healthy = analysis.pipeline_healthy !== false && analysis.degraded !== true;
+    setText("analysis-activity-health", healthy
+      ? pendingWindows > 0 ? "ANALYSING + COLLECTING" : "ANALYSIS HEALTHY"
+      : "ANALYSIS DEGRADED");
+    setTone(activityHealth, healthy ? "good" : "bad");
+  }
+
   function applyStatus(status) {
     state.status = status;
     state.configuredDeviceId = status.configured_device_id;
@@ -1408,18 +2123,27 @@
     const nextSessionId = session?.session_id ?? null;
     if (nextSessionId !== state.activeSessionId) {
       const previousSessionId = state.activeSessionId;
-      closeLiveSocket();
-      clearLiveAnalysis();
-      if (state.mode === "live") clearSignalState();
+      if (state.mode === "live") {
+        closeLiveSocket();
+        clearLiveAnalysis();
+        clearSignalState();
+      } else {
+        const liveResultSessionId = state.liveAnalysisResult?.session_id ??
+          state.liveAnalysisWindows.at(-1)?.session_id ?? null;
+        if (liveResultSessionId !== nextSessionId) {
+          clearLiveAnalysis(false);
+          renderReviewAnalysisWindows();
+        }
+      }
       state.activeSessionId = nextSessionId;
-      if (nextSessionId === null && previousSessionId !== null) {
+      if (state.mode === "live" && nextSessionId === null && previousSessionId !== null) {
         state.finalAnalysisSessionId = previousSessionId;
         state.finalAnalysisLoadedSessionId = null;
-        void refreshFinalAnalysis(previousSessionId);
-      } else if (nextSessionId !== null) {
+        void refreshFinalAnalysis(previousSessionId, { mode: "live" });
+      } else if (state.mode === "live" && nextSessionId !== null) {
         state.finalAnalysisSessionId = nextSessionId;
         state.finalAnalysisLoadedSessionId = null;
-        renderFinalAnalysisState({ state: "unavailable" }, nextSessionId);
+        renderFinalAnalysisState({ state: "unavailable" }, nextSessionId, { mode: "live" });
       }
     }
 
@@ -1462,6 +2186,10 @@
       "live-health",
       `${formatNumber(status.live.connected_clients)} / ${formatNumber(status.live.dropped_packets)}`,
     );
+    setText(
+      "analysis-delivery",
+      `${formatNumber(status.live.delivered_analysis)} delivered / ${formatNumber(status.live.dropped_analysis)} dropped`,
+    );
     setText("storage-queue", formatNumber(status.storage.queue_depth));
     setText("persisted-packets", formatNumber(status.storage.persisted_packets));
     setText(
@@ -1469,35 +2197,48 @@
       `${formatNumber(status.storage.storage_errors)} / ${formatNumber(status.storage.storage_drops)}`,
     );
     const analysis = status.analysis ?? {};
-    const lastWindow = analysis.last_window ?? {};
-    const lastWindowEnd = Number(lastWindow.end_ms);
-    if (Number.isFinite(lastWindowEnd)) {
-      setText("analysis-window-state", `W${Math.max(1, Math.round(lastWindowEnd / 10_000))} complete`);
-    } else if (session !== null) {
-      setText("analysis-window-state", "Collecting W1");
-    } else {
-      setText("analysis-window-state", "No active analysis");
-    }
+    const collection = analysis.collection;
+    const collectionStart = finiteNumber(collection?.collecting_window_start_ms);
+    const collectionNumber = collectionStart === null ? null : Math.max(1, Math.floor(collectionStart / 10_000) + 1);
+    setText("analysis-window-state", session !== null && collectionNumber !== null
+      ? `Collecting W${collectionNumber}`
+      : session === null && analysis.final_analysis?.state === "pending"
+        ? "Finalizing"
+        : session === null && analysis.final_analysis?.state === "complete"
+          ? "Final synthesis ready"
+          : "No active analysis");
     setText(
       "analysis-queue",
       `${formatNumber(analysis.pending_analysis_windows ?? analysis.queue_depth)} pending · ${formatNumber(analysis.analysis_queue_drops ?? analysis.queue_drops)} drops`,
     );
-    if (
-      analysis.final_analysis?.session_id &&
-      (state.activeSessionId === null || analysis.final_analysis.session_id === state.activeSessionId)
-    ) {
+    setText(
+      "analysis-runtime-metrics",
+      `complete ${formatNumber(analysis.completed_windows_emitted ?? analysis.windows_emitted)} · failed ${formatNumber(analysis.windows_failed)} · input errors ${formatNumber(analysis.packet_processing_failures)} · wait ${formatNumber(analysis.last_analysis_queue_wait_ms)} ms · run ${formatNumber(analysis.last_analysis_duration_ms)} ms`,
+    );
+    const analysisHealthy = analysis.pipeline_healthy !== false && analysis.degraded !== true;
+    setText("analysis-health", analysisHealthy ? "Healthy" : "Degraded");
+    setTone(byId("analysis-health"), analysisHealthy ? "good" : "bad");
+    const analysisStorageHealthy = analysis.storage_healthy !== false;
+    setText(
+      "analysis-storage-health",
+      `${analysisStorageHealthy ? "Healthy" : "Degraded"} · q ${formatNumber(analysis.analysis_result_storage_queue_depth ?? analysis.storage_queue_depth)} · errors ${formatNumber(analysis.analysis_result_storage_errors ?? analysis.storage_errors)} · drops ${formatNumber(analysis.analysis_result_storage_drops ?? analysis.storage_drops)} · final ${analysis.final_analysis?.state ?? "—"}`,
+    );
+    setTone(byId("analysis-storage-health"), analysisStorageHealthy ? "good" : "bad");
+    renderAnalysisActivity(status, session);
+    if (state.mode === "live" && analysis.final_analysis?.session_id &&
+      (state.activeSessionId === null || analysis.final_analysis.session_id === state.activeSessionId)) {
       state.finalAnalysisSessionId = analysis.final_analysis.session_id;
-      renderFinalAnalysisState(analysis.final_analysis, state.finalAnalysisSessionId);
+      renderFinalAnalysisState(analysis.final_analysis, state.finalAnalysisSessionId, { mode: "live" });
       if (
         analysis.final_analysis.state === "complete" &&
         state.activeSessionId === null &&
         state.finalAnalysisLoadedSessionId !== state.finalAnalysisSessionId &&
         !state.finalAnalysisFetchPending
       ) {
-        void refreshFinalAnalysis(state.finalAnalysisSessionId);
+        void refreshFinalAnalysis(state.finalAnalysisSessionId, { mode: "live" });
       }
-    } else if (session !== null) {
-      renderFinalAnalysisState({ state: "unavailable" }, session.session_id);
+    } else if (state.mode === "live" && session !== null) {
+      renderFinalAnalysisState({ state: "unavailable" }, session.session_id, { mode: "live" });
     }
     updatePacketRate(status);
 

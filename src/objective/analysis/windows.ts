@@ -139,6 +139,17 @@ export interface AnalysisEpochCoverage {
   latest_sample_ms: number | null;
 }
 
+export interface AnalysisCollectionSnapshot {
+  session_id: string;
+  epoch_id: string;
+  latest_sample_ms: number | null;
+  collecting_window_start_ms: number;
+  collecting_window_end_ms: number;
+  progress_ms: number;
+  progress_fraction: number;
+  window_duration_ms: number;
+}
+
 const MODALITIES: AnalysisModality[] = ["ecg", "ppg", "gsr", "imu", "temperature"];
 
 function emptyAcceptedSampleIndexes(): AcceptedSampleIndexes {
@@ -293,6 +304,31 @@ export class AnalysisWindowEngine {
 
   getNextWindowEndMs(): number {
     return this.nextWindowEndMs;
+  }
+
+  getCollectionSnapshot(): AnalysisCollectionSnapshot | null {
+    if (this.sessionId === null || this.epochId === null) {
+      return null;
+    }
+
+    const collectingWindowStartMs = this.nextWindowEndMs - WINDOW_DURATION_MS;
+    const progressMs = Number.isFinite(this.latestSampleMs)
+      ? Math.min(
+        WINDOW_DURATION_MS,
+        Math.max(0, this.latestSampleMs - collectingWindowStartMs),
+      )
+      : 0;
+
+    return {
+      session_id: this.sessionId,
+      epoch_id: this.epochId,
+      latest_sample_ms: Number.isFinite(this.latestSampleMs) ? this.latestSampleMs : null,
+      collecting_window_start_ms: collectingWindowStartMs,
+      collecting_window_end_ms: this.nextWindowEndMs,
+      progress_ms: progressMs,
+      progress_fraction: progressMs / WINDOW_DURATION_MS,
+      window_duration_ms: WINDOW_DURATION_MS,
+    };
   }
 
   getIncompleteTail(): IncompleteAnalysisTail | null {

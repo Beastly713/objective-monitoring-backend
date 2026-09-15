@@ -31,6 +31,7 @@ import { AnalysisResultBus } from "./resultBus.js";
 import {
   AnalysisWindowEngine,
   type AnalysisEpochCoverage,
+  type AnalysisCollectionSnapshot,
   type CompletedAnalysisWindow,
   type IncompleteAnalysisTail,
 } from "./windows.js";
@@ -109,6 +110,7 @@ export interface AnalysisPipelineSnapshot {
   pendingAnalysisWindows: number;
   lastAnalysisQueueWaitMs: number | null;
   lastAnalysisDurationMs: number | null;
+  collection: AnalysisCollectionSnapshot | null;
   lastWindow: {
     session_id: string | null;
     epoch_id: string | null;
@@ -608,6 +610,7 @@ export class ObjectiveAnalysisPipeline {
       pendingAnalysisWindows: this.queue.getDepth() + (this.processingSessionId === null ? 0 : 1),
       lastAnalysisQueueWaitMs: this.lastAnalysisQueueWaitMs,
       lastAnalysisDurationMs: this.lastAnalysisDurationMs,
+      collection: state?.windowEngine.getCollectionSnapshot() ?? null,
       lastWindow: { ...this.lastWindow },
       baseline: {
         collection_complete: baseline.collection_complete,

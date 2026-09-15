@@ -148,7 +148,11 @@
                 <div><dt>Persisted packets</dt><dd id="persisted-packets">—</dd></div>
                 <div><dt>Storage errors / drops</dt><dd id="storage-errors">—</dd></div>
                 <div><dt>Analysis window</dt><dd id="analysis-window-state">—</dd></div>
+                <div><dt>Analysis delivery</dt><dd id="analysis-delivery">—</dd></div>
                 <div><dt>Analysis queue</dt><dd id="analysis-queue">—</dd></div>
+                <div><dt>Analysis runtime</dt><dd id="analysis-runtime-metrics">—</dd></div>
+                <div><dt>Analysis health</dt><dd id="analysis-health">—</dd></div>
+                <div><dt>Analysis storage</dt><dd id="analysis-storage-health">—</dd></div>
                 <div><dt>Final analysis</dt><dd id="final-analysis-state">—</dd></div>
                 <div><dt>Epoch</dt><dd id="epoch-state">Waiting for data</dd></div>
               </dl>
@@ -165,7 +169,44 @@
           </div>
           <span id="analysis-context" class="analysis-context">Live window</span>
         </div>
-        <p id="analysis-final-summary" class="analysis-empty">Final session synthesis is unavailable until the completed windows are drained.</p>
+        <div id="analysis-activity" class="analysis-activity" aria-label="Analysis activity">
+          <div class="analysis-activity-heading">
+            <div>
+              <p class="section-kicker">Analysis activity</p>
+              <h3 id="analysis-activity-state">Waiting for an active session</h3>
+            </div>
+            <span id="analysis-activity-health" class="analysis-state-pill neutral">No active analysis</span>
+          </div>
+          <div class="analysis-activity-grid">
+            <div><dt>Collection</dt><dd id="analysis-collection-window">—</dd></div>
+            <div><dt>Progress</dt><dd id="analysis-collection-progress">—</dd></div>
+            <div><dt>Latest completed</dt><dd id="analysis-latest-completed">—</dd></div>
+            <div><dt>Baseline</dt><dd id="analysis-baseline-state">—</dd></div>
+            <div><dt>Worker</dt><dd id="analysis-worker-state">—</dd></div>
+            <div><dt>Latest sample</dt><dd id="analysis-latest-sample">—</dd></div>
+            <div><dt>Dashboard receipt</dt><dd id="analysis-result-received">—</dd></div>
+          </div>
+          <div class="analysis-progress-track" aria-hidden="true"><span id="analysis-progress-bar"></span></div>
+        </div>
+        <p id="analysis-final-summary" class="analysis-empty analysis-final-summary">No final session synthesis is selected.</p>
+        <div id="final-analysis-content" class="final-analysis-content" hidden>
+          <div class="final-analysis-heading">
+            <div>
+              <p class="section-kicker">Final session synthesis</p>
+              <h3 id="final-analysis-title">Session-wide engineering observations</h3>
+            </div>
+            <span id="final-analysis-version" class="mono muted">—</span>
+          </div>
+          <div class="final-analysis-grid">
+            <section><h4>Session coverage</h4><div id="final-session-coverage"></div></section>
+            <section><h4>Quality over session</h4><div id="final-session-quality"></div></section>
+            <section><h4>Baseline summary</h4><div id="final-session-baseline"></div></section>
+            <section><h4>Rule summary</h4><div id="final-session-rules"></div></section>
+            <section><h4>Multimodal summary</h4><div id="final-session-multimodal"></div></section>
+            <section class="final-analysis-wide"><h4>Feature trends</h4><div id="final-session-trends"></div></section>
+            <section class="final-analysis-wide"><h4>Window-by-window observations</h4><div id="final-session-observations"></div></section>
+          </div>
+        </div>
         <p id="analysis-empty" class="analysis-empty">Analysis unavailable for this point.</p>
         <div id="analysis-content" class="analysis-content" hidden>
           <div class="analysis-headline-grid">
@@ -181,17 +222,44 @@
               <dt>Window</dt>
               <dd id="analysis-window" class="mono">—</dd>
             </div>
+            <div>
+              <dt>Analysis version</dt>
+              <dd id="analysis-version" class="mono">—</dd>
+            </div>
           </div>
           <dl class="analysis-details">
-            <div><dt>Supporting signals</dt><dd id="analysis-supporting-signals">—</dd></div>
+            <div><dt>Multimodal explanation</dt><dd id="analysis-explanation">—</dd></div>
+            <div><dt>Supporting / contradicting</dt><dd id="analysis-supporting-signals">—</dd></div>
+            <div><dt>Result created</dt><dd id="analysis-created-at">—</dd></div>
             <div><dt>Feature summary</dt><dd id="analysis-feature-summary">—</dd></div>
-            <div><dt>Quality</dt><dd id="analysis-quality-summary">—</dd></div>
+            <div><dt>Quality summary</dt><dd id="analysis-quality-summary">—</dd></div>
           </dl>
-          <div class="analysis-rules">
-            <h3>Deterministic rule observations</h3>
-            <ul id="analysis-rule-list"></ul>
+          <div class="analysis-subsection">
+            <div class="subsection-heading"><h3>Baseline state</h3><span id="analysis-baseline-ready" class="analysis-state-pill neutral">—</span></div>
+            <div id="analysis-baseline-detail" class="analysis-detail-grid"></div>
+          </div>
+          <div class="analysis-subsection">
+            <div class="subsection-heading"><h3>Source and continuity trace</h3><span id="analysis-continuity-state" class="analysis-state-pill neutral">—</span></div>
+            <div id="analysis-source-trace" class="analysis-detail-grid"></div>
+          </div>
+          <div class="analysis-subsection">
+            <div class="subsection-heading"><h3>Modality details</h3><span class="muted">Quality, features, and eligible rule evidence</span></div>
+            <div id="analysis-modality-grid" class="analysis-modality-grid"></div>
+          </div>
+          <div class="analysis-subsection">
+            <div class="subsection-heading"><h3>Deterministic rule evaluation</h3><span id="analysis-fired-rule-count" class="analysis-state-pill neutral">—</span></div>
+            <div id="analysis-fired-rules" class="fired-rule-list"></div>
+            <details class="analysis-rule-details">
+              <summary>Show all rule evaluations</summary>
+              <ul id="analysis-rule-list"></ul>
+            </details>
           </div>
         </div>
+        <section class="recent-analysis-section" aria-labelledby="recent-analysis-heading">
+          <div class="subsection-heading"><h3 id="recent-analysis-heading">Recent completed windows</h3><span id="recent-analysis-context" class="muted">Updated by completed results</span></div>
+          <ol id="recent-analysis-windows" class="recent-analysis-windows"></ol>
+          <p id="recent-analysis-empty" class="muted">No completed analysis windows have arrived.</p>
+        </section>
       </section>
 
       <section class="signals-section" aria-labelledby="signals-heading">
