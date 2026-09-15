@@ -30,6 +30,22 @@ const DASHBOARD_ASSETS = new Map<string, DashboardAsset>([
     },
   ],
   [
+    "/clinician/objective/demo",
+    {
+      contentType: "text/html; charset=utf-8",
+      path: path.join(repositoryRoot, "public/objective/index.html"),
+      cacheControl: "no-cache",
+    },
+  ],
+  [
+    "/clinician/objective/demo/",
+    {
+      contentType: "text/html; charset=utf-8",
+      path: path.join(repositoryRoot, "public/objective/index.html"),
+      cacheControl: "no-cache",
+    },
+  ],
+  [
     "/objective-assets/objective.css",
     {
       contentType: "text/css; charset=utf-8",
@@ -66,12 +82,16 @@ const DASHBOARD_ASSETS = new Map<string, DashboardAsset>([
 export async function handleObjectiveDashboardRequest(
   request: IncomingMessage,
   response: ServerResponse,
+  options: { objectiveDemoEnabled?: boolean } = {},
 ): Promise<boolean> {
   if (request.method !== "GET") {
     return false;
   }
 
   const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
+  if (pathname.startsWith("/clinician/objective/demo") && options.objectiveDemoEnabled === false) {
+    return false;
+  }
   const asset = DASHBOARD_ASSETS.get(pathname);
   if (asset === undefined) {
     return false;

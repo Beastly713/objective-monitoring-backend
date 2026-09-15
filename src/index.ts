@@ -26,6 +26,8 @@ import { ObjectiveSessionManager } from "./objective/sessionManager.js";
 import { handleObjectiveSessionRequest } from "./objective/sessionRoutes.js";
 import { handleObjectiveStatusRequest } from "./objective/statusRoutes.js";
 import { ObjectiveTimeMapper } from "./objective/timeMapper.js";
+import { handleObjectiveDemoRequest } from "./objective/demo/demoRoutes.js";
+import { DemoRuntime } from "./objective/demo/demoRuntime.js";
 
 const DEFAULT_HOST = "0.0.0.0";
 const DEFAULT_PORT = 8080;
@@ -48,6 +50,12 @@ function readRequiredEnvironmentVariable(name: string): string {
     throw new Error(`${name} must be configured with a non-empty value`);
   }
   return value;
+}
+
+function readDemoEnabled(): boolean {
+  const value = process.env.OBJECTIVE_DEMO_ENABLED;
+  if (value === undefined) return true;
+  return !["0", "false", "off", "no"].includes(value.trim().toLowerCase());
 }
 
 async function startBackend(): Promise<void> {
@@ -93,6 +101,8 @@ async function startBackend(): Promise<void> {
       timeMapper: new ObjectiveTimeMapper(),
       acceptedPacketBus,
     });
+    const demoEnabled = readDemoEnabled();
+    const demoRuntime = new DemoRuntime();
 
     const server = createServer((request, response) => {
       if (
@@ -111,7 +121,18 @@ async function startBackend(): Promise<void> {
         return;
       }
 
-      void handleObjectiveDashboardRequest(request, response)
+      void handleObjectiveDemoRequest(request, response, {
+        runtime: demoRuntime,
+        enabled: demoEnabled,
+      })
+        .then((handled) => {
+          if (handled) {
+            return true;
+          }
+          return handleObjectiveDashboardRequest(request, response, {
+            objectiveDemoEnabled: demoEnabled,
+          });
+        })
         .then((handled) => {
           if (handled) {
             return true;
@@ -162,7 +183,10 @@ async function startBackend(): Promise<void> {
     attachObjectiveWebSocketRouter(server, {
       deviceGateway,
       liveGateway,
+      demoLiveGateway: demoEnabled ? demoRuntime.liveGateway : undefined,
     });
+
+    server.on("close", () => demoRuntime?.close());
 
     server.on("error", (error) => {
       console.error(`[backend] server error message=${error.message}`);

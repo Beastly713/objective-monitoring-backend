@@ -5,10 +5,12 @@ import { OBJECTIVE_DEVICE_PATH, type DeviceGateway } from "./deviceGateway.js";
 import type { LiveGateway } from "./live/liveGateway.js";
 
 const LIVE_PATH_PATTERN = /^\/ws\/objective\/live\/([^/]+)$/;
+const DEMO_LIVE_PATH_PATTERN = /^\/ws\/objective\/demo\/live\/([^/]+)$/;
 
 export interface ObjectiveWebSocketRouterDependencies {
   deviceGateway: DeviceGateway;
   liveGateway: LiveGateway;
+  demoLiveGateway?: LiveGateway;
 }
 
 export interface ObjectiveWebSocketRouter {
@@ -43,6 +45,19 @@ export function attachObjectiveWebSocketRouter(
         const sessionId = decodeURIComponent(liveMatch[1]);
         if (sessionId.length > 0) {
           dependencies.liveGateway.handleUpgrade(request, socket, head, sessionId);
+          return;
+        }
+      } catch {
+        // Reject malformed URL encoding below.
+      }
+    }
+
+    const demoLiveMatch = DEMO_LIVE_PATH_PATTERN.exec(pathname);
+    if (demoLiveMatch !== null && dependencies.demoLiveGateway !== undefined) {
+      try {
+        const sessionId = decodeURIComponent(demoLiveMatch[1]);
+        if (sessionId.length > 0) {
+          dependencies.demoLiveGateway.handleUpgrade(request, socket, head, sessionId);
           return;
         }
       } catch {
