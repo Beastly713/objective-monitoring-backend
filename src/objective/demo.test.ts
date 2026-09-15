@@ -109,6 +109,13 @@ async function closeWebSocket(webSocket: WebSocket): Promise<void> {
   });
 }
 
+function extractFunction(source: string, name: string): string {
+  const start = source.indexOf(`function ${name}(`);
+  assert.notEqual(start, -1, `${name} must remain in the demo script`);
+  const nextFunction = source.indexOf("\n  function ", start + 1);
+  return source.slice(start, nextFunction === -1 ? source.length : nextFunction);
+}
+
 function deviceGateway(): DeviceGateway {
   return {
     handleUpgrade: (_request, socket) => socket.end(),
@@ -484,6 +491,30 @@ test("demo and production pages/assets are separate and the demo has no producti
   assert.match(demoScript, /sample\[1\] \/ 16_384/);
   assert.match(demoScript, /sample\[1\] \* 0\.0078125/);
   assert.doesNotMatch(demoScript, /requestAnimationFrame/);
+});
+
+test("demo renderers own their empty states and tolerate repeated rendering", async () => {
+  const demoHtml = await readFile("public/objective/demo.html", "utf8");
+  const demoScript = await readFile("public/objective/demo.js", "utf8");
+  const renderScenarios = extractFunction(demoScript, "renderScenarios");
+  const renderWindows = extractFunction(demoScript, "renderWindows");
+
+  assert.doesNotMatch(demoHtml, /id="scenario-empty"/);
+  assert.doesNotMatch(demoHtml, /id="window-empty"/);
+  assert.doesNotMatch(renderScenarios, /scenario-empty|empty\.hidden/);
+  assert.doesNotMatch(renderWindows, /window-empty|empty\.hidden/);
+  assert.match(renderScenarios, /container\.replaceChildren\(\)/);
+  assert.match(renderScenarios, /state\.scenarios\.length === 0/);
+  assert.match(renderScenarios, /document\.createElement\("p"\)/);
+  assert.match(renderScenarios, /Loading scenarios…/);
+  assert.match(renderWindows, /container\.replaceChildren\(\)/);
+  assert.match(renderWindows, /rows\.length === 0/);
+  assert.match(renderWindows, /document\.createElement\("p"\)/);
+  assert.match(renderWindows, /No completed analysis windows yet\./);
+  assert.doesNotMatch(
+    `${renderScenarios}\n${renderWindows}`,
+    /replaceChildren\(\)[\s\S]*?empty\.hidden/,
+  );
 });
 
 test("dashboard routes serve the dedicated demo assets and respect the demo feature flag", async () => {

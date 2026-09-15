@@ -282,11 +282,16 @@
 
   function renderWindows() {
     const container = byId("completed-window-analysis");
-    const empty = byId("window-empty");
     container.replaceChildren();
     const rows = [...state.windows.entries()].sort(([, left], [, right]) =>
       left.window.start_ms - right.window.start_ms);
-    empty.hidden = rows.length > 0;
+    if (rows.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "muted";
+      empty.textContent = "No completed analysis windows yet.";
+      container.appendChild(empty);
+      return;
+    }
     for (const [key, result] of rows) {
       const card = document.createElement("article");
       card.className = "window-card";
@@ -377,9 +382,14 @@
 
   function renderScenarios() {
     const container = byId("scenario-container");
-    const empty = byId("scenario-empty");
     container.replaceChildren();
-    empty.hidden = state.scenarios.length > 0;
+    if (state.scenarios.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "muted";
+      empty.textContent = "Loading scenarios…";
+      container.appendChild(empty);
+      return;
+    }
     for (const scenario of state.scenarios) {
       const card = document.createElement("article");
       card.className = "scenario-card";
@@ -640,6 +650,18 @@
     if (socket && socket.readyState < 2) socket.close();
   }
 
+  function resetFinalSummary() {
+    state.finalResult = null;
+    setText("final-state", "Pending");
+    setTone(byId("final-state"), "neutral");
+    const container = byId("final-scenario-summary");
+    container.replaceChildren();
+    const note = document.createElement("p");
+    note.className = "muted";
+    note.textContent = "The final summary appears after W1, W2, and W3 complete.";
+    container.appendChild(note);
+  }
+
   function connectSocket(sessionId) {
     return new Promise((resolve, reject) => {
       const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -676,21 +698,20 @@
     state.windows.clear();
     state.selectedWindowKey = null;
     state.resultSessionId = null;
-    state.finalResult = null;
     clearCharts();
     renderWindows();
     renderLatest(null);
-    renderFinalResult({ final_analysis: null });
+    resetFinalSummary();
   }
 
   async function runScenario(scenarioId) {
     if (state.runRequestPending || isBusyPhase(state.status?.phase)) return;
     state.runRequestPending = true;
-    state.selectedScenarioId = scenarioId;
-    clearError();
-    resetForScenario();
-    renderScenarios();
     try {
+      state.selectedScenarioId = scenarioId;
+      clearError();
+      resetForScenario();
+      renderScenarios();
       const prepared = await requestJson(`${API_BASE}/start`, {
         method: "POST",
         body: JSON.stringify({ scenario_id: scenarioId }),
@@ -733,6 +754,7 @@
   window.addEventListener("beforeunload", closeSocket);
   renderWindows();
   renderLatest(null);
+  resetFinalSummary();
   renderStatus({
     phase: "IDLE",
     scenario: null,
