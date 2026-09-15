@@ -1,9 +1,6 @@
 (() => {
   "use strict";
 
-  const DEMO_MODE = /^\/clinician\/objective\/demo\/?$/.test(window.location.pathname);
-  const API_BASE = DEMO_MODE ? "/api/objective/demo" : "/api/objective";
-  const LIVE_WS_BASE = DEMO_MODE ? "/ws/objective/demo/live" : "/ws/objective/live";
   const STATUS_INTERVAL_MS = 1_000;
   const HISTORY_INTERVAL_MS = 10_000;
   const LIVE_RECONNECT_MS = 1_000;
@@ -52,13 +49,6 @@
     finalAnalysisRetryAttempts: new Map(),
     previousRateSample: null,
     errorSource: null,
-    demo: {
-      scenarios: [],
-      selectedScenarioId: null,
-      status: null,
-      loadingScenarios: false,
-      guardTriggered: false,
-    },
     review: {
       selectionGeneration: 0,
       sessionId: null,
@@ -643,24 +633,24 @@
       const tail = result.session.incomplete_tail_present === true
         ? ` · incomplete tail ${formatDurationMs(result.session.incomplete_tail_duration_ms)}`
         : "";
-      setText("analysis-final-summary", `${DEMO_MODE ? "Scenario-phase final synthesis ready" : "Final session synthesis ready"} · ${formatNumber(completed)} completed windows${tail}.`);
+      setText("analysis-final-summary", `Final session synthesis ready · ${formatNumber(completed)} completed windows${tail}.`);
     } else if (stateText === "complete") {
       byId("final-analysis-content").hidden = true;
-      setText("analysis-final-summary", DEMO_MODE ? "Scenario-phase final synthesis is ready; loading its detailed result…" : "Final session synthesis is persisted; loading its detailed result…");
+      setText("analysis-final-summary", "Final session synthesis is persisted; loading its detailed result…");
     } else if (stateText === "pending") {
       byId("final-analysis-content").hidden = true;
       setText("analysis-final-summary", options.loading === true
         ? "Loading final session synthesis…"
-        : DEMO_MODE ? "Finalizing scenario-phase analysis while completed windows drain." : "Finalizing session analysis… persistence pending while completed windows drain.");
+        : "Finalizing session analysis… persistence pending while completed windows drain.");
     } else if (stateText === "error") {
       byId("final-analysis-content").hidden = true;
       setText("analysis-final-summary", "Final session synthesis could not be read because the analysis path reported an error.");
     } else {
       byId("final-analysis-content").hidden = true;
       setText("analysis-final-summary", options.mode === "review"
-        ? DEMO_MODE ? `No scenario-phase final synthesis is available for ${shortId(sessionId)} at ${ANALYSIS_VERSION}.` : `No persisted final synthesis is available for ${shortId(sessionId)} at ${ANALYSIS_VERSION}.`
+        ? `No persisted final synthesis is available for ${shortId(sessionId)} at ${ANALYSIS_VERSION}.`
         : sessionId
-          ? DEMO_MODE ? "Scenario-phase final synthesis will be available after the visible demo completes." : "Final session synthesis will be available after STOP and persistence completes."
+          ? "Final session synthesis will be available after STOP and persistence completes."
           : "No final session synthesis is selected.");
     }
   }
@@ -749,7 +739,7 @@
       renderFinalAnalysisState({ state: "pending" }, sessionId, requestContext);
     }
     state.finalAnalysisFetchPending = true;
-    const request = requestJson(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}/final-analysis`)
+    const request = requestJson(`/api/objective/sessions/${encodeURIComponent(sessionId)}/final-analysis`)
       .then((response) => {
         const finalAnalysis = response?.final_analysis ?? { state: "unavailable", available: false, result: null };
         cacheFinalAnalysis(sessionId, finalAnalysis);
@@ -1227,7 +1217,7 @@
     state.review.cache.set(index, entry);
     const sessionId = state.review.sessionId;
     entry.promise = requestJson(
-      `${API_BASE}/sessions/${encodeURIComponent(sessionId)}/replay/packets?from_ms=${fromMs}&duration_ms=${chunkDurationMs}`,
+      `/api/objective/sessions/${encodeURIComponent(sessionId)}/replay/packets?from_ms=${fromMs}&duration_ms=${chunkDurationMs}`,
     ).then((result) => {
       if (
         generation !== state.review.selectionGeneration ||
@@ -1281,7 +1271,7 @@
     };
     state.review.analysisCache.set(key, entry);
     entry.promise = requestJson(
-      `${API_BASE}/sessions/${encodeURIComponent(sessionId)}/analysis?from_ms=${fromMs}&duration_ms=${durationMs}&analysis_version=${encodeURIComponent(ANALYSIS_VERSION)}`,
+      `/api/objective/sessions/${encodeURIComponent(sessionId)}/analysis?from_ms=${fromMs}&duration_ms=${durationMs}&analysis_version=${encodeURIComponent(ANALYSIS_VERSION)}`,
     ).then((response) => {
       if (
         generation !== state.review.selectionGeneration ||
@@ -1816,7 +1806,7 @@
     setReplayStatus("Loading replay manifest…");
     try {
       const result = await requestJson(
-        `${API_BASE}/sessions/${encodeURIComponent(sessionId)}/replay`,
+        `/api/objective/sessions/${encodeURIComponent(sessionId)}/replay`,
       );
       if (generation !== state.review.selectionGeneration || state.mode !== "review") return;
       state.review.manifest = result;
@@ -1867,125 +1857,9 @@
     applyReviewFocus();
   }
 
-  function renderDemoScenarios() {
-    const container = byId("demo-scenarios");
-    container.replaceChildren();
-    if (state.demo.scenarios.length === 0) {
-      const empty = document.createElement("p");
-      empty.className = "muted";
-      empty.textContent = "No demonstration scenarios are available.";
-      container.appendChild(empty);
-      return;
-    }
-    for (const scenario of state.demo.scenarios) {
-      const card = document.createElement("button");
-      card.type = "button";
-      card.className = "demo-scenario-card";
-      card.dataset.scenarioId = scenario.id;
-      card.classList.toggle("selected", state.demo.selectedScenarioId === scenario.id);
-      card.disabled = state.actionPending;
-      const heading = document.createElement("h3");
-      heading.textContent = scenario.title;
-      const description = document.createElement("p");
-      description.textContent = scenario.description;
-      const expected = document.createElement("small");
-      expected.textContent = `Expected: ${scenario.expected_pattern} · ${scenario.expected_rule_ids.join(", ")} · ${scenario.expected_evidence_tier}`;
-      card.append(heading, description, expected);
-      card.addEventListener("click", () => startDemoScenario(scenario.id));
-      container.appendChild(card);
-    }
-  }
-
-  async function refreshDemoScenarios() {
-    if (!DEMO_MODE || state.demo.loadingScenarios) return;
-    state.demo.loadingScenarios = true;
-    try {
-      const response = await requestJson(`${API_BASE}/scenarios`);
-      state.demo.scenarios = Array.isArray(response?.scenarios) ? response.scenarios : [];
-      renderDemoScenarios();
-      clearError("demo-scenarios");
-    } catch (error) {
-      showError(`Unable to load demonstration scenarios: ${error.message}`, "demo-scenarios");
-    } finally {
-      state.demo.loadingScenarios = false;
-    }
-  }
-
-  function startDemoScenario(scenarioId) {
-    if (!DEMO_MODE || state.actionPending) return;
-    state.demo.selectedScenarioId = scenarioId;
-    state.demo.guardTriggered = false;
-    closeLiveSocket();
-    clearSignalState();
-    renderDemoScenarios();
-    runSessionAction(() => requestJson(`${API_BASE}/start`, {
-      method: "POST",
-      body: JSON.stringify({ scenario_id: scenarioId }),
-    }));
-  }
-
-  function stopDemo() {
-    if (!DEMO_MODE || state.actionPending) return;
-    runSessionAction(() => requestJson(`${API_BASE}/stop`, {
-      method: "POST",
-      body: JSON.stringify({ session_id: state.activeSessionId }),
-    }));
-  }
-
-  function renderDemoStatus(status) {
-    const demo = status.demo ?? {};
-    state.demo.status = demo;
-    if (demo.scenario?.id) state.demo.selectedScenarioId = demo.scenario.id;
-    setText("demo-phase", demo.phase ?? "IDLE");
-    const elapsed = finiteNumber(demo.visible_elapsed_ms) ?? 0;
-    const duration = finiteNumber(demo.visible_duration_ms) ?? 30_000;
-    const packetCount = finiteNumber(demo.visible_packet_count) ?? 0;
-    const windowCount = finiteNumber(demo.visible_analysis_window_count) ?? 0;
-    const scenarioTitle = demo.scenario?.title ?? "No scenario selected";
-    const phaseText = demo.phase === "PREPARING"
-      ? `${scenarioTitle} · preparing hidden baseline and priming data`
-      : demo.phase === "STREAMING"
-        ? `${scenarioTitle} · streaming simulated source · T+${formatReplayTime(elapsed)} / ${formatReplayTime(duration)} · ${formatNumber(packetCount)} packets · ${formatNumber(windowCount)} windows`
-        : demo.phase === "FINALIZING"
-          ? `${scenarioTitle} · finalizing visible windows`
-          : demo.phase === "COMPLETE"
-            ? `${scenarioTitle} · complete · ${formatNumber(windowCount)} visible windows`
-            : demo.phase === "ERROR"
-              ? `${scenarioTitle} · stopped with an isolated demo error`
-              : "Select a scenario to begin.";
-    setText("demo-runtime-status", phaseText);
-    const validationState = demo.validation_state ?? "pending";
-    const validationText = validationState === "passed"
-      ? "Validation passed"
-      : validationState === "failed"
-        ? `Validation failed${demo.validation_message ? ` · ${demo.validation_message}` : ""}`
-        : demo.baseline_ready === true ? "Baseline ready · validation pending" : "Validation pending";
-    setText("demo-validation-status", validationText);
-    setTone(byId("demo-validation-status"), validationState === "passed" ? "good" : validationState === "failed" ? "bad" : "warn");
-    byId("demo-stop-button").disabled = !["PREPARING", "STREAMING"].includes(demo.phase) || state.actionPending;
-    renderDemoScenarios();
-
-    const forbidden = demo.latest_pattern === "Insufficient evidence for multimodal interpretation" ||
-      (Array.isArray(demo.latest_rule_ids) && demo.latest_rule_ids.includes("MM-07"));
-    if (forbidden && demo.phase !== "ERROR" && !state.demo.guardTriggered) {
-      state.demo.guardTriggered = true;
-      showError("The demonstration guard stopped a visible insufficient-evidence result.", "demo-guard");
-      void requestJson(`${API_BASE}/stop`, {
-        method: "POST",
-        body: JSON.stringify({ session_id: state.activeSessionId }),
-      }).catch(() => undefined);
-    }
-    if (!forbidden && demo.phase === "PREPARING") state.demo.guardTriggered = false;
-  }
-
   function applyModePresentation() {
     const reviewing = state.mode === "review";
     document.body.dataset.mode = state.mode;
-    document.body.dataset.demo = String(DEMO_MODE);
-    byId("demo-banner").hidden = !DEMO_MODE;
-    byId("demo-scenario-panel").hidden = !DEMO_MODE;
-    byId("demo-nav-button").hidden = DEMO_MODE;
-    byId("return-live-button").hidden = !DEMO_MODE;
     byId("live-mode-button").classList.toggle("active", !reviewing);
     byId("review-mode-button").classList.toggle("active", reviewing);
     byId("live-mode-button").setAttribute("aria-pressed", String(!reviewing));
@@ -1993,18 +1867,12 @@
     byId("review-controls").hidden = !reviewing;
     byId("review-focus-controls").hidden = !reviewing;
     byId("inspection-panel").hidden = !reviewing;
-    setText("dashboard-title", DEMO_MODE
-      ? (reviewing ? "Objective monitoring · demonstration review" : "Objective monitoring · simulated demonstration")
-      : (reviewing ? "Clinician historical review" : "Clinician monitoring"));
+    setText("dashboard-title", reviewing ? "Clinician historical review" : "Clinician monitoring");
     setText(
       "dashboard-subtitle",
-      DEMO_MODE
-        ? "Deterministic synthetic sensor data · isolated from live hardware and patient data"
-        : reviewing ? "Persisted raw sensor replay · live monitoring continues independently" : "Live raw sensor streams and operational health",
+      reviewing ? "Persisted raw sensor replay · live monitoring continues independently" : "Live raw sensor streams and operational health",
     );
-    setText("signals-kicker", DEMO_MODE
-      ? (reviewing ? "Synthetic signals · REVIEW" : "Synthetic signals · LIVE")
-      : (reviewing ? "Historical signals · REVIEW" : "Live signals · LIVE"));
+    setText("signals-kicker", reviewing ? "Historical signals · REVIEW" : "Live signals · LIVE");
     setText(
       "signals-description",
       reviewing
@@ -2027,17 +1895,6 @@
           temperature: "Display conversion · 60 second window",
         };
     Object.entries(chartContexts).forEach(([name, text]) => setText(`${name}-context`, text));
-    const historyKicker = document.querySelector(".history-panel .section-kicker");
-    if (historyKicker) historyKicker.textContent = DEMO_MODE ? "In-memory demonstration history" : "Durable history";
-    setText("history-heading", DEMO_MODE ? "Demonstration sessions" : "Recent sessions");
-    setText("final-analysis-kicker", DEMO_MODE ? "Scenario-phase final synthesis · SIMULATED" : "Final session synthesis");
-    setText("final-analysis-title", DEMO_MODE ? "Simulated demonstration engineering observations" : "Session-wide engineering observations");
-    const historyNote = document.querySelector(".history-note");
-    if (historyNote) historyNote.textContent = DEMO_MODE
-      ? "Select REVIEW above to inspect this bounded in-memory synthetic replay; it never affects live monitoring."
-      : "Select REVIEW above to inspect persisted raw waveform history without affecting live monitoring.";
-    const controlNote = document.querySelector(".control-note");
-    if (controlNote && DEMO_MODE) controlNote.textContent = "This view is isolated from the live device, accepted-packet bus, database, and patient data.";
     applyReviewFocus();
     updateReviewedSessionHighlight();
     if (state.status) applyStatus(state.status);
@@ -2106,7 +1963,7 @@
 
     closeLiveSocket();
     const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const url = `${scheme}//${window.location.host}${LIVE_WS_BASE}/${encodeURIComponent(sessionId)}`;
+    const url = `${scheme}//${window.location.host}/ws/objective/live/${encodeURIComponent(sessionId)}`;
     const webSocket = new WebSocket(url);
     state.liveSocket = webSocket;
     state.socketSessionId = sessionId;
@@ -2388,17 +2245,6 @@
     byId("start-button").disabled =
       state.mode !== "live" || state.actionPending || session !== null || !state.configuredDeviceId;
     byId("stop-button").disabled = state.mode !== "live" || state.actionPending || session === null;
-    if (DEMO_MODE) {
-      const demo = status.demo ?? {};
-      const sourceActive = ["PREPARING", "STREAMING", "FINALIZING"].includes(demo.phase);
-      const sourceLabel = sourceActive ? "Simulated source active" : demo.phase === "COMPLETE" ? "Simulated source complete" : "Simulated source idle";
-      setBadge("device-badge", sourceLabel, sourceActive ? "good" : demo.phase === "COMPLETE" ? "warn" : "neutral");
-      setBadge("storage-badge", "Demo memory only", "good");
-      if (session !== null) {
-        setBadge("session-badge", `Demo ${session.status}`, session.status === "ERROR" ? "bad" : session.status === "COMPLETED" ? "warn" : "good");
-      }
-      renderDemoStatus(status);
-    }
   }
 
   async function requestJson(url, options) {
@@ -2418,7 +2264,7 @@
     if (state.statusRefreshing) return;
     state.statusRefreshing = true;
     try {
-      applyStatus(await requestJson(`${API_BASE}/status`));
+      applyStatus(await requestJson("/api/objective/status"));
       clearError("status");
     } catch (error) {
       showError(`Unable to refresh monitoring status: ${error.message}`, "status");
@@ -2525,7 +2371,7 @@
     if (state.historyRefreshing) return;
     state.historyRefreshing = true;
     try {
-      const result = await requestJson(`${API_BASE}/sessions`);
+      const result = await requestJson("/api/objective/sessions");
       renderHistory(Array.isArray(result.sessions) ? result.sessions : []);
       setText("history-updated", `Updated ${new Intl.DateTimeFormat(undefined, { timeStyle: "medium" }).format(new Date())}`);
       clearError("history");
@@ -2555,23 +2401,19 @@
   }
 
   byId("start-button").addEventListener("click", () => {
-    if (DEMO_MODE) return;
-    runSessionAction(() => requestJson(`${API_BASE}/sessions`, {
+    runSessionAction(() => requestJson("/api/objective/sessions", {
       method: "POST",
       body: JSON.stringify({ device_id: state.configuredDeviceId }),
     }));
   });
 
   byId("stop-button").addEventListener("click", () => {
-    if (DEMO_MODE) return;
     if (!state.activeSessionId) return;
     runSessionAction(() => requestJson(
-      `${API_BASE}/sessions/${encodeURIComponent(state.activeSessionId)}/stop`,
+      `/api/objective/sessions/${encodeURIComponent(state.activeSessionId)}/stop`,
       { method: "POST", body: "{}" },
     ));
   });
-
-  byId("demo-stop-button").addEventListener("click", stopDemo);
 
   byId("live-mode-button").addEventListener("click", () => setMode("live"));
   byId("review-mode-button").addEventListener("click", () => setMode("review"));
@@ -2607,7 +2449,6 @@
 
   window.addEventListener("beforeunload", closeLiveSocket);
   applyModePresentation();
-  void refreshDemoScenarios();
   void refreshStatus();
   void refreshHistory();
   window.setInterval(refreshStatus, STATUS_INTERVAL_MS);

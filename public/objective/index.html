@@ -17,8 +17,7 @@
         <p id="dashboard-subtitle" class="subtitle">Live raw sensor streams and operational health</p>
       </div>
       <nav class="dashboard-nav" aria-label="Objective monitoring views">
-        <a id="demo-nav-button" class="button secondary" href="/clinician/objective/demo">Demonstration</a>
-        <a id="return-live-button" class="button secondary" href="/clinician/objective">Return to live monitoring</a>
+        <a class="button secondary" href="/clinician/objective/demo">Demonstration</a>
       </nav>
       <div class="headline-status" aria-label="Current monitoring state">
         <span id="device-badge" class="badge neutral">Device unknown</span>
@@ -30,10 +29,6 @@
 
     <main>
       <div id="error-banner" class="error-banner" role="alert" hidden></div>
-      <section id="demo-banner" class="demo-banner" aria-label="Synthetic demonstration notice" hidden>
-        <strong>SIMULATED DEMONSTRATION</strong>
-        <span>Deterministic synthetic sensor data — not live hardware or patient data.</span>
-      </section>
 
       <section class="panel mode-panel" aria-label="Monitoring mode">
         <div class="mode-switch" role="group" aria-label="Choose live or historical review">
@@ -103,25 +98,6 @@
             <span id="replay-status">Select a persisted session to review.</span>
             <span id="replay-warning" class="replay-warning" hidden></span>
           </div>
-        </div>
-      </section>
-
-      <section id="demo-scenario-panel" class="panel demo-scenario-panel" aria-labelledby="demo-scenario-heading" hidden>
-        <div class="panel-heading">
-          <div>
-            <p class="section-kicker">Synthetic scenarios</p>
-            <h2 id="demo-scenario-heading">Choose a deterministic demonstration</h2>
-          </div>
-          <span id="demo-phase" class="state-value">IDLE</span>
-        </div>
-        <p class="demo-scenario-intro">Each card starts one isolated in-memory run. The hidden baseline and priming interval are never broadcast or stored.</p>
-        <div id="demo-scenarios" class="demo-scenarios" aria-live="polite">
-          <p class="muted">Loading demonstration scenarios…</p>
-        </div>
-        <div class="demo-runtime-row">
-          <span id="demo-runtime-status">Select a scenario to begin.</span>
-          <span id="demo-validation-status" class="analysis-state-pill neutral">Validation pending</span>
-          <button id="demo-stop-button" class="button danger" type="button" disabled>Stop demo</button>
         </div>
       </section>
 
@@ -219,7 +195,7 @@
         <div id="final-analysis-content" class="final-analysis-content" hidden>
           <div class="final-analysis-heading">
             <div>
-              <p id="final-analysis-kicker" class="section-kicker">Final session synthesis</p>
+              <p class="section-kicker">Final session synthesis</p>
               <h3 id="final-analysis-title">Session-wide engineering observations</h3>
             </div>
             <span id="final-analysis-version" class="mono muted">—</span>

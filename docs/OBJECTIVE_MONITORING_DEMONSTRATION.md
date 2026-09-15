@@ -1,75 +1,111 @@
 # Objective monitoring simulated demonstration
 
-The simulated demonstration is an intentionally separate teaching and validation
-harness for the objective-monitoring dashboard. It is available at
-`/clinician/objective/demo` and is labelled:
+The simulated demonstration is a small mentor-facing teaching harness at
+`/clinician/objective/demo`. It has its own HTML, CSS, JavaScript, in-memory
+buses, and `ObjectiveAnalysisPipeline`. It is not a second clinician monitor.
 
-> SIMULATED DEMONSTRATION — Deterministic synthetic sensor data — not live hardware or patient data.
+The production page at `/clinician/objective` remains a production-only
+application. Synthetic packets never enter the production accepted-packet bus,
+session manager, device registry, device gateway, packet store, analysis store,
+database, history routes, or production live WebSocket.
 
-It has its own in-memory accepted-packet bus, analysis-result bus, objective
-analysis pipeline, live gateway, bounded session history, and replay endpoints.
-It does not publish to or write to the production accepted-packet bus, packet
-store, analysis stores, session manager, device registry, device gateway,
-firmware, database, or production live WebSocket path. The signal generator
-creates and validates Schema V1 packets before accepting them, then sends those
-packets through the existing `ObjectiveAnalysisPipeline`.
+## Purpose and warning
+
+The page permanently displays:
+
+> SIMULATED DEMONSTRATION — Deterministic synthetic sensor data. Not live hardware data and not patient data.
+
+The demonstration shows raw synthetic ECG, PPG, GSR/EDA, IMU, and temperature
+streams flowing through Schema V1 validation and the existing deterministic
+analysis pipeline. Its outputs are engineering observations only, not
+diagnoses, impairment decisions, or emergency decisions.
 
 ## Scenarios
 
-Each card starts one scenario and automatically runs a 30-second visible phase.
-The pipeline receives a hidden 60-second baseline and, where required, hidden
-changed-window priming. Hidden packets and results are never broadcast or
-included in the visible replay.
+Exactly five scenarios are available:
 
-| Scenario | Expected visible interpretation |
+| Scenario | Expected pipeline contract |
 | --- | --- |
-| Stable physiological baseline | `MM-08`, moderate evidence |
-| Isolated cardiovascular change at rest | `MM-03`; ECG/PPG change together and `PPG-02` does not fire |
-| Isolated electrodermal change | `MM-04`; GSR change without `MM-07` |
-| Isolated local skin-temperature change | `MM-05` after the three-window persistence requirement |
-| Corroborated multimodal physiological change | `MM-02`, corroborated evidence, ECG/PPG/GSR support |
+| Stable physiological baseline | `No material change from session baseline observed`, `MM-08`, moderate evidence |
+| Isolated cardiovascular change at rest | `Isolated cardiovascular change observed`, `ECG-01`, `PPG-01`, `MM-03`, limited evidence; no `PPG-02` |
+| Isolated electrodermal change | `Isolated electrodermal change observed`, `GSR-01`, `MM-04`, limited evidence |
+| Isolated local skin-temperature change | `Isolated local skin-temperature change observed`, `TEMP-01`, `MM-05`, limited evidence |
+| Corroborated multimodal physiological change | `Multi-modality physiological change observed`, `ECG-01`, `PPG-01`, `GSR-01`, `MM-02`, corroborated evidence; ECG/PPG/GSR support |
 
-Packets are generated at a 100 ms wall-time cadence with nominal raw rates of
-ECG 250 Hz, PPG 100 Hz, GSR 128 Hz, IMU 100 Hz, and temperature 2 Hz. The
-final visible window is closed by an analysis-only packet at the exact next
-boundary; that packet is not sent to the demo live gateway or retained in demo
-history.
+The catalog expectations validate actual pipeline output. They never replace,
+edit, or hide an `AnalysisResult`.
 
-## Endpoints
+## Timing and analysis
 
-The demo uses these isolated endpoints:
+Each run has a hidden 60-second baseline and scenario-specific hidden priming:
+
+* stable baseline: 0 seconds
+* cardiovascular change: 10 seconds
+* electrodermal change: 10 seconds
+* temperature change: 20 seconds
+* multimodal change: 30 seconds
+
+Hidden packets enter only the isolated analysis pipeline. They are not sent to
+the browser and do not become visible analysis windows. The visible phase is
+exactly 30 seconds with the real completed-window boundaries:
+
+* W1: `[0 s, 10 s)`
+* W2: `[10 s, 20 s)`
+* W3: `[20 s, 30 s)`
+
+An internal exact-boundary packet closes W3; it is analysis-only and is not
+shown as an extra graph packet. The final synthesis is generated with
+`synthesizeFinalSessionAnalysis` from only those three rebased visible results,
+with a 30,000 ms visible epoch coverage and no missing windows or incomplete
+tail.
+
+Packets are deterministic and validated as Schema V1 at nominal rates of ECG
+250 Hz, PPG 100 Hz, GSR 128 Hz, IMU 100 Hz, and temperature 2 Hz. The browser
+uses uPlot and appends the received raw points on a fixed scenario-relative
+0–30 second axis without interpolation or filtering.
+
+## One-click flow
+
+1. The mentor selects **Run scenario** on a scenario card.
+2. `POST /api/objective/demo/start` prepares the hidden baseline and priming,
+   drains the isolated pipeline, verifies all five baseline modalities, and
+   returns `READY` without publishing a visible packet.
+3. The browser connects to `/ws/objective/demo/live/:sessionId` and installs
+   packet and analysis handlers. The gateway sends its `ready` message.
+4. The browser automatically calls `POST /api/objective/demo/run`.
+5. Only then does the runtime publish the visible 30-second stream and actual
+   completed-window analysis updates.
+
+The two-stage handshake prevents the first visible packet from racing the
+browser WebSocket connection. The demo WebSocket emits only `ready`, `packet`,
+and `analysis_update` messages.
+
+## Endpoints and storage
 
 * `GET /api/objective/demo/scenarios`
 * `POST /api/objective/demo/start` with `{ "scenario_id": "..." }`
-* `POST /api/objective/demo/stop`
+* `POST /api/objective/demo/run` with `{ "session_id": "..." }`
+* `POST /api/objective/demo/abort` with `{ "session_id": "..." }` for automatic failed-handshake cleanup
 * `GET /api/objective/demo/status`
-* `GET /api/objective/demo/sessions`
-* `GET /api/objective/demo/sessions/:id/replay`
-* `GET /api/objective/demo/sessions/:id/replay/packets`
-* `GET /api/objective/demo/sessions/:id/analysis`
-* `GET /api/objective/demo/sessions/:id/final-analysis`
+* `GET /api/objective/demo/result` for the current run
 * `GET /ws/objective/demo/live/:sessionId`
 
-The same dashboard bundle is reused with a demo configuration. The live page
-continues to use `/api/objective` and `/ws/objective/live`; the demo page never
-mixes those paths with its own data.
+Only the current run is retained in process memory. There is no demo database
+write, persisted history, historical replay, session browser, hardware
+interaction, device/ACK simulation, or production-shaped status response.
 
-## Configuration and verification
+Set `OBJECTIVE_DEMO_ENABLED=false` (also `0`, `off`, or `no`) to disable the
+demo page, HTTP routes, and WebSocket route while leaving production monitoring
+available.
 
-The demonstration is enabled by default so the navigation button is available.
-Set `OBJECTIVE_DEMO_ENABLED=false` (also accepts `0`, `off`, or `no`) to disable
-the demo page, HTTP, and WebSocket routes while leaving the real monitoring
-paths unchanged.
+## Validation
 
-Useful checks from the repository root:
+From the repository root:
 
 ```text
 npm test
 npm run build
 node --check public/objective/objective.js
+node --check public/objective/demo.js
 git diff --check
 ```
-
-Demo history is bounded to five sessions and expires idle retained sessions
-after 45 minutes. It is process memory only and is deliberately not durable
-patient or hardware history.

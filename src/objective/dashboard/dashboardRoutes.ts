@@ -33,7 +33,7 @@ const DASHBOARD_ASSETS = new Map<string, DashboardAsset>([
     "/clinician/objective/demo",
     {
       contentType: "text/html; charset=utf-8",
-      path: path.join(repositoryRoot, "public/objective/index.html"),
+      path: path.join(repositoryRoot, "public/objective/demo.html"),
       cacheControl: "no-cache",
     },
   ],
@@ -41,7 +41,7 @@ const DASHBOARD_ASSETS = new Map<string, DashboardAsset>([
     "/clinician/objective/demo/",
     {
       contentType: "text/html; charset=utf-8",
-      path: path.join(repositoryRoot, "public/objective/index.html"),
+      path: path.join(repositoryRoot, "public/objective/demo.html"),
       cacheControl: "no-cache",
     },
   ],
@@ -58,6 +58,22 @@ const DASHBOARD_ASSETS = new Map<string, DashboardAsset>([
     {
       contentType: "text/javascript; charset=utf-8",
       path: path.join(repositoryRoot, "public/objective/objective.js"),
+      cacheControl: "no-cache",
+    },
+  ],
+  [
+    "/objective-assets/demo.css",
+    {
+      contentType: "text/css; charset=utf-8",
+      path: path.join(repositoryRoot, "public/objective/demo.css"),
+      cacheControl: "no-cache",
+    },
+  ],
+  [
+    "/objective-assets/demo.js",
+    {
+      contentType: "text/javascript; charset=utf-8",
+      path: path.join(repositoryRoot, "public/objective/demo.js"),
       cacheControl: "no-cache",
     },
   ],
@@ -89,7 +105,9 @@ export async function handleObjectiveDashboardRequest(
   }
 
   const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
-  if (pathname.startsWith("/clinician/objective/demo") && options.objectiveDemoEnabled === false) {
+  const isDemoPage = pathname === "/clinician/objective/demo" || pathname === "/clinician/objective/demo/";
+  const isDemoAsset = pathname === "/objective-assets/demo.js" || pathname === "/objective-assets/demo.css";
+  if ((isDemoPage || isDemoAsset) && options.objectiveDemoEnabled === false) {
     return false;
   }
   const asset = DASHBOARD_ASSETS.get(pathname);

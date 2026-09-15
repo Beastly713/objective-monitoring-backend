@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Objective Monitoring · Simulated Demonstration</title>
+    <link rel="stylesheet" href="/objective-assets/uPlot.min.css">
+    <link rel="stylesheet" href="/objective-assets/demo.css">
+    <script defer src="/objective-assets/uPlot.iife.min.js"></script>
+    <script defer src="/objective-assets/demo.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Objective Monitoring</p>
+        <h1>Simulated Demonstration</h1>
+        <p class="subtitle">A deterministic teaching harness for the existing objective-analysis pipeline</p>
+      </div>
+      <a class="button secondary" href="/clinician/objective">Back to live monitoring</a>
+    </header>
+
+    <main>
+      <div id="error-banner" class="error-banner" role="alert" hidden></div>
+
+      <section class="notice" aria-label="Synthetic data warning">
+        <strong>SIMULATED DEMONSTRATION</strong>
+        <span>Deterministic synthetic sensor data. Not live hardware data and not patient data.</span>
+      </section>
+
+      <section class="panel scenario-panel" aria-labelledby="scenario-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Scenario selection</p>
+            <h2 id="scenario-heading">Choose a scenario</h2>
+          </div>
+          <span class="muted">One click prepares, connects, streams, and analyzes</span>
+        </div>
+        <p class="scenario-help">Choose a card, then use its explicit <strong>Run scenario</strong> button.</p>
+        <div id="scenario-container" class="scenario-grid" aria-live="polite">
+          <p id="scenario-empty" class="muted">Loading scenarios…</p>
+        </div>
+      </section>
+
+      <section class="panel current-panel" aria-labelledby="current-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Current scenario</p>
+            <h2 id="current-heading"><span id="current-scenario-title">Choose a scenario</span></h2>
+          </div>
+          <span id="demo-phase" class="phase-badge neutral">IDLE</span>
+        </div>
+        <p id="demo-status" class="status-line">Choose a scenario.</p>
+        <div class="progress-row">
+          <span>Visible phase</span>
+          <progress id="demo-progress" max="30000" value="0">0%</progress>
+          <span id="demo-progress-label" class="mono">T+00:00.000 / 00:30.000</span>
+        </div>
+        <div class="run-metrics" aria-label="Demonstration progress">
+          <span><b id="demo-packet-count">0</b> visible packets</span>
+          <span><b id="demo-window-count">0</b> completed windows</span>
+          <span><b id="demo-baseline-state">0/5</b> baseline ready</span>
+          <span id="demo-validation-state" class="status-pill neutral">Validation pending</span>
+        </div>
+      </section>
+
+      <section class="streams-section" aria-labelledby="streams-heading">
+        <div class="section-heading-row">
+          <div>
+            <p class="section-kicker">Simulated sensor streams</p>
+            <h2 id="streams-heading">Raw physiological data</h2>
+          </div>
+          <p class="muted">Scenario-relative time · no interpolation or filtering</p>
+        </div>
+        <div class="chart-grid">
+          <article class="panel chart-panel chart-wide">
+            <div class="chart-heading"><div><h3>ECG</h3><p>Raw ADC sample[1]</p></div><span id="ecg-reading">—</span></div>
+            <div id="ecg-chart" class="chart" aria-label="Simulated raw ECG chart"></div>
+          </article>
+          <article class="panel chart-panel chart-wide">
+            <div class="chart-heading"><div><h3>PPG</h3><p>RED and IR raw counts</p></div><span id="ppg-reading">—</span></div>
+            <div id="ppg-chart" class="chart" aria-label="Simulated raw PPG chart"></div>
+          </article>
+          <article class="panel chart-panel">
+            <div class="chart-heading"><div><h3>GSR / EDA</h3><p>Raw sample[1]</p></div><span id="gsr-reading">—</span></div>
+            <div id="gsr-chart" class="chart" aria-label="Simulated raw GSR chart"></div>
+          </article>
+          <article class="panel chart-panel">
+            <div class="chart-heading"><div><h3>IMU motion</h3><p>Acceleration magnitude</p></div><span id="imu-reading">—</span></div>
+            <div id="imu-chart" class="chart" aria-label="Simulated IMU acceleration magnitude chart"></div>
+          </article>
+          <article class="panel chart-panel">
+            <div class="chart-heading"><div><h3>Temperature</h3><p>Display conversion · °C</p></div><span id="temperature-reading">—</span></div>
+            <div id="temperature-chart" class="chart" aria-label="Simulated temperature chart"></div>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel analysis-panel" aria-labelledby="analysis-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Completed-window analysis</p>
+            <h2 id="analysis-heading">Actual pipeline results</h2>
+          </div>
+          <span class="muted">10-second completed windows</span>
+        </div>
+        <div id="completed-window-analysis" class="window-list">
+          <p id="window-empty" class="muted">No completed analysis windows yet.</p>
+        </div>
+      </section>
+
+      <section class="panel latest-panel" aria-labelledby="latest-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Latest window details</p>
+            <h2 id="latest-heading"><span id="latest-window-label">No window selected</span></h2>
+          </div>
+          <span id="latest-evidence" class="status-pill neutral">—</span>
+        </div>
+        <div class="latest-summary">
+          <div><dt>Observed pattern</dt><dd id="latest-pattern">—</dd></div>
+          <div><dt>Explanation</dt><dd id="latest-explanation">—</dd></div>
+          <div><dt>Supporting modalities</dt><dd id="latest-supporting">—</dd></div>
+          <div><dt>Contradicting modalities</dt><dd id="latest-contradicting">—</dd></div>
+          <div><dt>Fired rules</dt><dd id="latest-rules">—</dd></div>
+        </div>
+        <div class="feature-section">
+          <h3>Key measurements</h3>
+          <div id="latest-features" class="feature-grid"></div>
+        </div>
+      </section>
+
+      <section class="panel final-panel" aria-labelledby="final-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Final scenario summary</p>
+            <h2 id="final-heading">Visible-phase synthesis</h2>
+          </div>
+          <span id="final-state" class="status-pill neutral">Pending</span>
+        </div>
+        <div id="final-scenario-summary" class="final-summary">
+          <p class="muted">The final summary appears after W1, W2, and W3 complete.</p>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
